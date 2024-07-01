@@ -1,0 +1,204 @@
+from infinipy.dnd.statsblock import *
+from typing import List
+
+class DragonAttack(Attack):
+    def __init__(self, name: str, description: str, ability: Ability, damage: List[Damage], attack_type: AttackType, stats_block: 'StatsBlock'):
+        super().__init__(
+            name=name,
+            description=description,
+            cost=[ActionCost(type=ActionType.ACTION, cost=1)],
+            limited_usage=None,
+            attack_type=attack_type,
+            ability=ability,
+            range=Range(type=RangeType.REACH, distance=10),
+            damage=damage,
+            targeting=Targeting(type=TargetType.ONE_TARGET),
+            stats_block=stats_block
+        )
+
+class FireBreath(Attack):
+    def __init__(self, stats_block: 'StatsBlock'):
+        super().__init__(
+            name="Fire Breath",
+            description="The dragon exhales fire in a 60-foot cone. Each creature in that area must make a DC 21 Dexterity saving throw, taking 63 (18d6) fire damage on a failed save, or half as much damage on a successful one.",
+            cost=[ActionCost(type=ActionType.ACTION, cost=1)],
+            limited_usage=LimitedUsage(
+                usage_type=UsageType.RECHARGE,
+                usage_number=1,
+                recharge=LimitedRecharge(recharge_type=RechargeType.ROUND, recharge_rate=5)
+            ),
+            attack_type=AttackType.RANGED_SPELL,
+            ability=Ability.CON,
+            range=Range(type=RangeType.REACH, distance=60),
+            damage=[Damage(dice=Dice(dice_count=18, dice_value=6, modifier=0), type=DamageType.FIRE)],
+            targeting=Targeting(
+                type=TargetType.AREA,
+                shape=ShapeType.CONE,
+                size=60,
+            ),
+            stats_block=stats_block
+        )
+
+def create_adult_red_dragon() -> StatsBlock:
+    dragon = StatsBlock(
+        size=Size.HUGE,
+        type=MonsterType.DRAGON,
+        alignment=Alignment.CHAOTIC_EVIL,
+        ability_scores=AbilityScores(
+            strength=AbilityScore(ability=Ability.STR, score=27),
+            dexterity=AbilityScore(ability=Ability.DEX, score=10),
+            constitution=AbilityScore(ability=Ability.CON, score=25),
+            intelligence=AbilityScore(ability=Ability.INT, score=16),
+            wisdom=AbilityScore(ability=Ability.WIS, score=13),
+            charisma=AbilityScore(ability=Ability.CHA, score=21)
+        ),
+        speed=Speed(walk=40, fly=80),
+        skills=[
+            SkillBonus(skill=Skills.PERCEPTION, bonus=13),
+            SkillBonus(skill=Skills.STEALTH, bonus=6)
+        ],
+        immunities=[DamageType.FIRE],
+        senses=[
+            Sense(type=SensesType.BLINDSIGHT, range=60),
+            Sense(type=SensesType.DARKVISION, range=120)
+        ],
+        languages=[Language.COMMON, Language.DRACONIC],
+        challenge=17,
+        experience_points=18000,
+        special_traits=[
+            "Legendary Resistance (3/Day): If the dragon fails a saving throw, it can choose to succeed instead."
+        ],
+        legendary=True,
+        lair=True,
+        regional_effects=[
+            "The region containing a legendary red dragon's lair is warped by the dragon's magic, which creates one or more of the following effects:",
+            "- Small earthquakes are common within 6 miles of the dragon's lair.",
+            "- Water sources within 1 mile of the lair are supernaturally warm and tainted by sulfur.",
+            "- Rocky fissures within 1 mile of the dragon's lair form portals to the Elemental Plane of Fire, allowing creatures of elemental fire into the world to dwell nearby."
+        ]
+    )
+
+    dragon.add_action(DragonAttack(
+        name="Bite",
+        description="A bite attack.",
+        ability=Ability.STR,
+        damage=[
+            Damage(dice=Dice(dice_count=2, dice_value=10, modifier=0), type=DamageType.PIERCING),
+            Damage(dice=Dice(dice_count=2, dice_value=6, modifier=0), type=DamageType.FIRE)
+        ],
+        attack_type=AttackType.MELEE_WEAPON,
+        stats_block=dragon
+    ))
+
+    dragon.add_action(DragonAttack(
+        name="Claw",
+        description="A claw attack.",
+        ability=Ability.STR,
+        damage=[Damage(dice=Dice(dice_count=2, dice_value=6, modifier=0), type=DamageType.SLASHING)],
+        attack_type=AttackType.MELEE_WEAPON,
+        stats_block=dragon
+    ))
+
+    dragon.add_action(DragonAttack(
+        name="Tail",
+        description="A tail attack.",
+        ability=Ability.STR,
+        damage=[Damage(dice=Dice(dice_count=2, dice_value=8, modifier=0), type=DamageType.BLUDGEONING)],
+        attack_type=AttackType.MELEE_WEAPON,
+        stats_block=dragon
+    ))
+
+    dragon.add_action(FireBreath(stats_block=dragon))
+
+    # Add legendary actions
+    dragon.legendary_actions = [
+        DragonAttack(
+            name="Detect",
+            description="The dragon makes a Wisdom (Perception) check.",
+            ability=Ability.WIS,
+            damage=[],
+            attack_type=AttackType.MELEE_WEAPON,
+            stats_block=dragon
+        ),
+        DragonAttack(
+            name="Tail Attack",
+            description="The dragon makes a tail attack.",
+            ability=Ability.STR,
+            damage=[Damage(dice=Dice(dice_count=2, dice_value=8, modifier=0), type=DamageType.BLUDGEONING)],
+            attack_type=AttackType.MELEE_WEAPON,
+            stats_block=dragon
+        ),
+        DragonAttack(
+            name="Wing Attack (Costs 2 Actions)",
+            description="The dragon beats its wings. Each creature within 10 ft. of the dragon must succeed on a DC 25 Dexterity saving throw or take 15 (2d6 + 8) bludgeoning damage and be knocked prone. The dragon can then fly up to half its flying speed.",
+            ability=Ability.STR,
+            damage=[Damage(dice=Dice(dice_count=2, dice_value=6, modifier=8), type=DamageType.BLUDGEONING)],
+            attack_type=AttackType.MELEE_WEAPON,
+            stats_block=dragon
+        )
+    ]
+
+    # Add lair action
+    dragon.lair_actions = [
+        Action(
+            name="Volcanic Gases",
+            description="On initiative count 20 (losing initiative ties), the dragon can release a cloud of volcanic gases in a 20-foot-radius sphere centered on a point the dragon can see within 120 feet of it. The sphere spreads around corners, and its area is lightly obscured. It lasts until the initiative count 20 of the next round.",
+            cost=[ActionCost(type=ActionType.LAIR_ACTION, cost=1)],
+            limited_usage=None,
+            targeting=Targeting(
+                type=TargetType.AREA,
+                shape=ShapeType.SPHERE,
+                size=20,
+            ),
+            stats_block=dragon
+        )
+    ]
+
+    return dragon
+
+def print_dragon_details(dragon: StatsBlock):
+    print("\nAdult Red Dragon Details:\n")
+    print(f"Size: {dragon.size}")
+    print(f"Type: {dragon.type}")
+    print(f"Alignment: {dragon.alignment}")
+    print(f"Ability Scores:")
+    for ability in dragon.ability_scores.__dict__.values():
+        if isinstance(ability, AbilityScore):
+            print(f"  {ability.ability}: {ability.score} (Modifier: {ability.modifier})")
+    print(f"Speed: Walk {dragon.speed.walk} ft, Fly {dragon.speed.fly} ft")
+    print(f"Armor Class: {dragon.armor_class}")
+    print(f"Hit Points: {dragon.hit_points}")
+    print(f"Proficiency Bonus: +{dragon.proficiency_bonus}")
+    print("Saving Throws:")
+    for st in dragon.ability_scores.saving_throws:
+        print(f"  {st.ability}: +{st.bonus}")
+    print("Skills:")
+    for skill in dragon.skills:
+        print(f"  {skill.skill}: +{skill.bonus}")
+    print("Senses:")
+    for sense in dragon.senses:
+        print(f"  {sense.type}: {sense.range} ft")
+    print(f"Languages: {', '.join(dragon.languages)}")
+    print(f"Challenge Rating: {dragon.challenge} ({dragon.experience_points} XP)")
+    print("Special Traits:")
+    for trait in dragon.special_traits:
+        print(f"  {trait}")
+    print("Actions:")
+    for action in dragon.actions:
+        print(f"  - {action.name}: {action.action_docstring()}")
+    print("Legendary Actions:")
+    for action in dragon.legendary_actions:
+        print(f"  - {action.name}: {action.action_docstring()}")
+    print("Lair Actions:")
+    for action in dragon.lair_actions:
+        print(f"  - {action.name}: {action.description}")
+    print("Regional Effects:")
+    for effect in dragon.regional_effects:
+        print(f"  {effect}")
+
+def main():
+    dragon = create_adult_red_dragon()
+    print_dragon_details(dragon)
+
+if __name__ == "__main__":
+    main()
