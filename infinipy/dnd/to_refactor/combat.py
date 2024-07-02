@@ -1,13 +1,120 @@
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple
 import random
-from infinipy.dnd.statsblock import StatsBlock, ActionEconomy, Attack, Damage, Dice, DamageType, AttackType, AdvantageStatus
+from infinipy.dnd.statsblock import StatsBlock, ActionEconomy, Attack, Damage, Dice, DamageType, AttackType, AdvantageStatus, ActionType,Action,StatusEffect
 from infinipy.dnd.battlemap import BattleMap
 from infinipy.dnd.monsters.goblin import create_goblin
 from infinipy.dnd.monsters.skeleton import create_skeleton
+from pydantic import BaseModel, Field
+from typing import List, Dict, Tuple, Optional
+from enum import Enum
 
-@dataclass
-class ActionLog:
+class ActionCost(BaseModel):
+    action: int = 0
+    bonus_action: int = 0
+    reaction: int = 0
+    movement: int = 0
+
+class ActionOutcome(BaseModel):
+    success_probability: float
+    expected_damage: float
+    expected_healing: float
+    status_effects: List[StatusEffect] = Field(default_factory=list)
+
+class ActionOption(BaseModel):
+    action: Action
+    target: Optional[str]  # Target's ID, None for self-targeted actions
+    cost: ActionCost
+    outcome: ActionOutcome
+
+class DecisionStrategy(str, Enum):
+    RANDOM = "random"
+    AGGRESSIVE = "aggressive"
+    DEFENSIVE = "defensive"
+    SUPPORTIVE = "supportive"
+
+class Actor(BaseModel):
+    stats_block: StatsBlock
+    strategy: DecisionStrategy = DecisionStrategy.RANDOM
+
+    def get_available_actions(self, combat_manager: 'CombatManager') -> List[ActionOption]:
+        available_actions = []
+        for action in self.stats_block.actions:
+            if isinstance(action, Attack):
+                targets = combat_manager.get_valid_targets(self.stats_block.id, action.name)
+                for target_id in targets:
+                    cost = self._calculate_action_cost(action)
+                    outcome = self._calculate_action_outcome(action, target_id, combat_manager)
+                    available_actions.append(ActionOption(action=action, target=target_id, cost=cost, outcome=outcome))
+            else:
+                # Handle non-attack actions (e.g., Dodge, Dash, etc.)
+                cost = self._calculate_action_cost(action)
+                outcome = self._calculate_action_outcome(action, None, combat_manager)
+                available_actions.append(ActionOption(action=action, target=None, cost=cost, outcome=outcome))
+        
+        return available_actions
+
+    def _calculate_action_cost(self, action: Action) -> ActionCost:
+        cost = ActionCost()
+        for action_cost in action.cost:
+            if action_cost.type == ActionType.ACTION:
+                cost.action += action_cost.cost
+            elif action_cost.type == ActionType.BONUS_ACTION:
+                cost.bonus_action += action_cost.cost
+            elif action_cost.type == ActionType.REACTION:
+                cost.reaction += action_cost.cost
+            elif action_cost.type == ActionType.MOVEMENT:
+                cost.movement += action_cost.cost
+        return cost
+
+    def _calculate_action_outcome(self, action: Action, target_id: Optional[str], combat_manager: 'CombatManager') -> ActionOutcome:
+        if isinstance(action, Attack):
+            target = combat_manager.creatures[target_id] if target_id else None
+            hit_probability = self._calculate_hit_probability(action, target, combat_manager)
+            expected_damage = hit_probability * action.average_damage
+            return ActionOutcome(success_probability=hit_probability, expected_damage=expected_damage, expected_healing=0)
+        else:
+            # Handle non-attack actions
+            return ActionOutcome(success_probability=1.0, expected_damage=0, expected_healing=0)
+
+    def _calculate_hit_probability(self, attack: Attack, target: StatsBlock, combat_manager: 'CombatManager') -> float:
+        attacker_pos = combat_manager.battle_map.get_creature_position(self.stats_block.id)
+        target_pos = combat_manager.battle_map.get_creature_position(target.id)
+        
+        is_threatened = combat_manager.battle_map.is_threatened(self.stats_block.id)
+        is_ranged_attack = attack.attack_type in [AttackType.RANGED_WEAPON, AttackType.RANGED_SPELL]
+        
+        advantage_status = AdvantageStatus.DISADVANTAGE if (is_threatened and is_ranged_attack) else AdvantageStatus.NONE
+        
+        if advantage_status == AdvantageStatus.ADVANTAGE:
+            hit_chance = 1 - (target.armor_class - attack.hit_bonus - 1) ** 2 / 400
+        elif advantage_status == AdvantageStatus.DISADVANTAGE:
+            hit_chance = ((21 - (target.armor_class - attack.hit_bonus)) ** 2) / 400
+        else:
+            hit_chance = (21 - (target.armor_class - attack.hit_bonus)) / 20
+        
+        return max(0.05, min(0.95, hit_chance))  # Critical hit and miss probabilities
+
+    def choose_action(self, combat_manager: 'CombatManager') -> Tuple[Action, Optional[str]]:
+        available_actions = self.get_available_actions(combat_manager)
+        
+        if self.strategy == DecisionStrategy.RANDOM:
+            chosen_action = random.choice(available_actions)
+        elif self.strategy == DecisionStrategy.AGGRESSIVE:
+            chosen_action = max(available_actions, key=lambda a: a.outcome.expected_damage)
+        elif self.strategy == DecisionStrategy.DEFENSIVE:
+            # Prioritize actions that don't provoke attacks or increase defenses
+            defensive_actions = [a for a in available_actions if not isinstance(a.action, Attack) or a.action.name in ["Dodge", "Disengage"]]
+            chosen_action = random.choice(defensive_actions) if defensive_actions else random.choice(available_actions)
+        elif self.strategy == DecisionStrategy.SUPPORTIVE:
+            # Prioritize healing or buff actions if available, otherwise choose randomly
+            support_actions = [a for a in available_actions if a.outcome.expected_healing > 0 or any(effect in [StatusEffect.HELPING] for effect in a.outcome.status_effects)]
+            chosen_action = random.choice(support_actions) if support_actions else random.choice(available_actions)
+        
+        return chosen_action.action, chosen_action.target
+    
+
+
+class ActionLog(BaseModel):
     round: int
     turn: int
     attacker: str
@@ -24,21 +131,21 @@ class ActionLog:
     target_hp_before: int
     target_hp_after: int
 
-@dataclass
-class CombatLog:
+class CombatLog(BaseModel):
     actions: List[ActionLog] = field(default_factory=list)
 
-class CombatManager:
-    def __init__(self, battle_map: BattleMap):
-        self.battle_map = battle_map
-        self.creatures: Dict[str, StatsBlock] = {}
-        self.initiative_order: List[str] = []
-        self.current_turn_index: int = 0
-        self.round: int = 1
-        self.combat_log = CombatLog()
+class CombatManager(BaseModel):
+    battle_map: BattleMap
+    creatures: Dict[str, StatsBlock] = Field(default_factory=dict)
+    actors: Dict[str, Actor] = Field(default_factory=dict)
+    initiative_order: List[str] = Field(default_factory=list)
+    current_turn_index: int = 0
+    round: int = 1
+    combat_log: CombatLog = Field(default_factory=CombatLog)
 
-    def add_creature(self, creature: StatsBlock, position: Tuple[int, int]):
+    def add_creature(self, creature: StatsBlock, position: Tuple[int, int], strategy: DecisionStrategy = DecisionStrategy.RANDOM):
         self.creatures[creature.id] = creature
+        self.actors[creature.id] = Actor(stats_block=creature, strategy=strategy)
         self.battle_map.place_creature(creature.id, position)
 
     def roll_initiative(self):
@@ -124,6 +231,17 @@ class CombatManager:
             target_hp_after=target.current_hit_points
         ))
 
+    def perform_turn(self, actor_id: str):
+        actor = self.actors[actor_id]
+        action, target_id = actor.choose_action(self)
+        
+        if isinstance(action, Attack) and target_id:
+            self.perform_attack(actor_id, target_id, action.name)
+        else:
+            # Handle non-attack actions
+            print(f"{actor.stats_block.name} performs {action.name}")
+            # Implement effects of non-attack actions
+
     def roll_d20(self, advantage_status: AdvantageStatus) -> int:
         if advantage_status == AdvantageStatus.ADVANTAGE:
             return max(random.randint(1, 20), random.randint(1, 20))
@@ -160,28 +278,11 @@ def run_combat(combat_manager: CombatManager):
     while not combat_manager.is_combat_over():
         print_combat_status(combat_manager)
 
-        current_creature = combat_manager.get_current_creature()
-        print(f"\n{current_creature.name}'s turn")
+        current_actor_id = combat_manager.initiative_order[combat_manager.current_turn_index]
+        current_actor = combat_manager.actors[current_actor_id]
+        print(f"\n{current_actor.stats_block.name}'s turn")
 
-        attacks = [a for a in current_creature.actions if isinstance(a, Attack)]
-        if attacks:
-            chosen_attack = random.choice(attacks)
-            valid_targets = combat_manager.get_valid_targets(current_creature.id, chosen_attack.name)
-            
-            if valid_targets:
-                target_id = random.choice(valid_targets)
-                target = combat_manager.creatures[target_id]
-                print(f"{current_creature.name} attempts to use {chosen_attack.name} on {target.name}")
-                
-                try:
-                    combat_manager.perform_attack(current_creature.id, target_id, chosen_attack.name)
-                except ValueError as e:
-                    print(f"Attack failed: {e}")
-            else:
-                print(f"{current_creature.name} has no valid targets for {chosen_attack.name}")
-        else:
-            print(f"{current_creature.name} has no attacks available")
-
+        combat_manager.perform_turn(current_actor_id)
         combat_manager.next_turn()
 
     winner = next(creature for creature in combat_manager.creatures.values() if creature.current_hit_points > 0)
@@ -205,13 +306,13 @@ def print_combat_summary(combat_log: CombatLog):
 
 def main():
     battle_map = BattleMap(width=2, height=1)
-    combat_manager = CombatManager(battle_map)
+    combat_manager = CombatManager(battle_map=battle_map)
 
     goblin = create_goblin()
     skeleton = create_skeleton()
 
-    combat_manager.add_creature(goblin, (0, 0))
-    combat_manager.add_creature(skeleton, (1, 0))
+    combat_manager.add_creature(goblin, (0, 0), strategy=DecisionStrategy.AGGRESSIVE)
+    combat_manager.add_creature(skeleton, (1, 0), strategy=DecisionStrategy.RANDOM)
 
     combat_log = run_combat(combat_manager)
     print_combat_summary(combat_log)

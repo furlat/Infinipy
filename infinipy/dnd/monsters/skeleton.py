@@ -1,5 +1,10 @@
-from infinipy.dnd.statsblock import *
+from infinipy.dnd.statsblock import StatsBlock
+from infinipy.dnd.equipment import Armor, ArmorType, Shield, Weapon, WeaponProperty, ArmorClass
+from infinipy.dnd.actions import Action, ActionCost, ActionType, Targeting, TargetType, AttackType, Attack
+from infinipy.dnd.core import Ability, AbilityScores, AbilityScore, ModifiableValue, Dice, \
+ Damage, DamageType, Range, RangeType, Size, MonsterType, Alignment, Speed, Skills, Sense, SensesType, Language, ActionEconomy, SkillBonus
 from typing import List
+import random
 
 def create_skeleton() -> StatsBlock:
     skeleton = StatsBlock(
@@ -16,24 +21,26 @@ def create_skeleton() -> StatsBlock:
             charisma=AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=5))
         ),
         speed=Speed(walk=ModifiableValue(base_value=30)),
+        armor_class=ArmorClass(base_ac=13),  # Will be recalculated after equipping armor
         vulnerabilities=[DamageType.BLUDGEONING],
         immunities=[DamageType.POISON],
         senses=[Sense(type=SensesType.DARKVISION, range=60)],
-        languages=[Language.COMMON],
+        languages=["Common"],
         challenge=0.25,
         experience_points=50,
         special_traits=[
-            "Undead Fortitude: If damage reduces the skeleton to 0 hit points, it must make a Constitution saving throw with a DC of 5 + the damage taken, unless the damage is radiant or from a critical hit. On a success, the skeleton drops to 1 hit point instead."
+            "Undead Nature: The skeleton doesn't require air, food, drink, or sleep."
         ],
-        # Initialize the new required fields
-        max_hit_points=ModifiableValue(base_value=13),  # 2d8 + 4 average
-        current_hit_points=13,
+        # current_hit_points=10,
+        hit_dice=Dice(dice_count=2, dice_value=8, modifier=0),
         action_economy=ActionEconomy(speed=30)
     )
 
-    armor = Armor(name="Armor Scraps", type=ArmorType.LIGHT, base_ac=13, dex_bonus=True)
-    skeleton.equip_armor(armor)
+    # Equip armor
+    armor_scraps = Armor(name="Armor Scraps", type=ArmorType.LIGHT, base_ac=13, dex_bonus=True)
+    skeleton.equip_armor(armor_scraps)
 
+    # Add weapons
     shortsword = Weapon(
         name="Shortsword",
         damage=Damage(dice=Dice(dice_count=1, dice_value=6, modifier=0), type=DamageType.PIERCING),
@@ -52,44 +59,46 @@ def create_skeleton() -> StatsBlock:
     )
     skeleton.add_weapon(shortbow)
 
+    # Add Undead Fortitude trait
+    skeleton.add_action(UndeadFortitude(stats_block=skeleton))
+
     return skeleton
 
-class SkeletonAttack(Attack):
-    def __init__(self, weapon: Weapon, stats_block: 'StatsBlock'):
+class UndeadFortitude(Action):
+    def __init__(self, stats_block: 'StatsBlock'):
         super().__init__(
-            name=weapon.name,
-            description=f"Attack with {weapon.name}",
-            cost=[ActionCost(type=ActionType.ACTION, cost=1)],
+            name="Undead Fortitude",
+            description="If damage reduces the skeleton to 0 hit points, it must make a Constitution saving throw with a DC of 5 + the damage taken, unless the damage is radiant or from a critical hit. On a success, the skeleton drops to 1 hit point instead.",
+            cost=[],  # This is a passive trait, so no action cost
             limited_usage=None,
-            attack_type=weapon.attack_type,
-            ability=Ability.DEX if weapon.attack_type == AttackType.RANGED_WEAPON else Ability.STR,
-            range=weapon.range,
-            damage=[weapon.damage],
-            targeting=Targeting(type=TargetType.ONE_TARGET),
-            stats_block=stats_block,
-            weapon=weapon
+            targeting=Targeting(type=TargetType.SELF),
+            stats_block=stats_block
         )
 
+    def execute(self, damage: int, damage_type: DamageType, is_critical: bool) -> bool:
+        if self.stats_block.current_hit_points == 0 and damage_type != DamageType.RADIANT and not is_critical:
+            dc = 5 + damage
+            con_save = self.stats_block.ability_scores.constitution.modifier + random.randint(1, 20)
+            if con_save >= dc:
+                self.stats_block.current_hit_points = 1
+                return True
+        return False
+
 def print_skeleton_details(skeleton: StatsBlock):
-    print("\nSkeleton Details:\n")
+    print("\nSkeleton Details:")
+    print(f"Name: {skeleton.name}")
     print(f"Size: {skeleton.size.value}")
     print(f"Type: {skeleton.type.value}")
     print(f"Alignment: {skeleton.alignment.value}")
-    print(f"Ability Scores:")
+    print("Ability Scores:")
     for ability in Ability:
         score = getattr(skeleton.ability_scores, ability.value.lower())
-        print(f"  {ability.value}: {score.score} (Modifier: {score.modifier})")
-    print(f"Speed: Walk {skeleton.speed.walk} ft")
-    print(f"Armor Class: {skeleton.armor_class}")
-    print(f"Hit Points: {skeleton.hit_points}")
+        print(f"  {ability.value}: {score.score.total_value} (Modifier: {score.modifier})")
+    print(f"Speed: Walk {skeleton.speed.walk.get_value()} ft")
+    print(f"Armor Class: {skeleton.armor_class.compute_ac()}")
+    print(f"Hit Points: {skeleton.current_hit_points}/{skeleton.max_hit_points}")
     print(f"Proficiency Bonus: +{skeleton.proficiency_bonus}")
-    print("Saving Throws:")
-    for st in skeleton.ability_scores.saving_throws:
-        print(f"  {st.ability.value}: +{st.bonus}")
-    print("Skills:")
-    for skill in skeleton.ability_scores.skill_bonuses:
-        print(f"  {skill.skill.value}: +{skill.bonus}")
-    print("Damage Resistances: " + ", ".join([r.value for r in skeleton.resistances]))
+    print("Damage Vulnerabilities: " + ", ".join([v.value for v in skeleton.vulnerabilities]))
     print("Damage Immunities: " + ", ".join([i.value for i in skeleton.immunities]))
     print("Senses:")
     for sense in skeleton.senses:
@@ -101,9 +110,12 @@ def print_skeleton_details(skeleton: StatsBlock):
         print(f"  {trait}")
     print("Actions:")
     for action in skeleton.actions:
-        print(f"  - {action.name}: {action.action_docstring()}")
+        if isinstance(action, Attack):
+            print(f"  {action.action_docstring()}")
+        else:
+            print(f"  {action.name}: {action.description}")
     print(f"Equipment: {', '.join([weapon.name for weapon in skeleton.weapons])}, "
-          f"{skeleton.armor.name if skeleton.armor else 'No Armor'}")
+          f"{skeleton.armor_class.equipped_armor.name if skeleton.armor_class.equipped_armor else 'No Armor'}")
 
 def main():
     skeleton = create_skeleton()

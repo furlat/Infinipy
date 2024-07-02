@@ -2,13 +2,13 @@ from typing import Dict, Tuple, List, Optional, Set
 from uuid import UUID, uuid4
 import copy
 from infinipy.dnd.statsblock import StatsBlock
+from pydantic import BaseModel, Field
 
-class BattleMap:
-    def __init__(self, width: int, height: int):
-        self.width = width
-        self.height = height
-        self.creature_positions: Dict[UUID, Tuple[int, int]] = {}
-        self.position_creatures: Dict[Tuple[int, int], UUID] = {}
+class BattleMap(BaseModel):
+    width: int
+    height: int
+    creature_positions: Dict[UUID, Tuple[int, int]] = Field(default_factory=dict)
+    position_creatures: Dict[Tuple[int, int], UUID] = Field(default_factory=dict)
 
     def place_creature(self, creature_id: UUID, position: Tuple[int, int]):
         if not (0 <= position[0] < self.width and 0 <= position[1] < self.height):
@@ -47,6 +47,7 @@ class BattleMap:
                 if self.get_distance(creature_pos, other_pos) <= 1:  # Adjacent squares
                     return True
         return False
+
     def get_all_creatures(self) -> Dict[UUID, Tuple[int, int]]:
         return self.creature_positions.copy()
 
