@@ -1,36 +1,22 @@
 from infinipy.dnd.statsblock import *
 from typing import List
 
-class SkeletonAttack(Attack):
-    def __init__(self, name: str, description: str, ability: Ability, damage: List[Damage], attack_type: AttackType, stats_block: 'StatsBlock'):
-        super().__init__(
-            name=name,
-            description=description,
-            cost=[ActionCost(type=ActionType.ACTION, cost=1)],
-            limited_usage=None,
-            attack_type=attack_type,
-            ability=ability,
-            range=Range(type=RangeType.REACH, distance=5),
-            damage=damage,
-            targeting=Targeting(type=TargetType.ONE_TARGET),
-            stats_block=stats_block
-        )
-
 def create_skeleton() -> StatsBlock:
     skeleton = StatsBlock(
+        name="Skeleton",
         size=Size.MEDIUM,
         type=MonsterType.UNDEAD,
         alignment=Alignment.LAWFUL_EVIL,
         ability_scores=AbilityScores(
-            strength=AbilityScore(ability=Ability.STR, score=10),
-            dexterity=AbilityScore(ability=Ability.DEX, score=14),
-            constitution=AbilityScore(ability=Ability.CON, score=15),
-            intelligence=AbilityScore(ability=Ability.INT, score=6),
-            wisdom=AbilityScore(ability=Ability.WIS, score=8),
-            charisma=AbilityScore(ability=Ability.CHA, score=5)
+            strength=AbilityScore(ability=Ability.STR, score=ModifiableValue(base_value=10)),
+            dexterity=AbilityScore(ability=Ability.DEX, score=ModifiableValue(base_value=14)),
+            constitution=AbilityScore(ability=Ability.CON, score=ModifiableValue(base_value=15)),
+            intelligence=AbilityScore(ability=Ability.INT, score=ModifiableValue(base_value=6)),
+            wisdom=AbilityScore(ability=Ability.WIS, score=ModifiableValue(base_value=8)),
+            charisma=AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=5))
         ),
-        speed=Speed(walk=30),
-        resistances=[DamageType.POISON],
+        speed=Speed(walk=ModifiableValue(base_value=30)),
+        vulnerabilities=[DamageType.BLUDGEONING],
         immunities=[DamageType.POISON],
         senses=[Sense(type=SensesType.DARKVISION, range=60)],
         languages=[Language.COMMON],
@@ -39,54 +25,76 @@ def create_skeleton() -> StatsBlock:
         special_traits=[
             "Undead Fortitude: If damage reduces the skeleton to 0 hit points, it must make a Constitution saving throw with a DC of 5 + the damage taken, unless the damage is radiant or from a critical hit. On a success, the skeleton drops to 1 hit point instead."
         ],
-        equipment=["Shortsword", "Shortbow", "Leather Armor"]
+        # Initialize the new required fields
+        max_hit_points=ModifiableValue(base_value=13),  # 2d8 + 4 average
+        current_hit_points=13,
+        action_economy=ActionEconomy(speed=30)
     )
 
-    skeleton.add_action(SkeletonAttack(
-        name="Shortsword",
-        description="A shortsword slash.",
-        ability=Ability.DEX,
-        damage=[Damage(dice=Dice(dice_count=1, dice_value=6, modifier=0), type=DamageType.PIERCING)],
-        attack_type=AttackType.MELEE_WEAPON,
-        stats_block=skeleton
-    ))
+    armor = Armor(name="Armor Scraps", type=ArmorType.LIGHT, base_ac=13, dex_bonus=True)
+    skeleton.equip_armor(armor)
 
-    skeleton.add_action(SkeletonAttack(
+    shortsword = Weapon(
+        name="Shortsword",
+        damage=Damage(dice=Dice(dice_count=1, dice_value=6, modifier=0), type=DamageType.PIERCING),
+        attack_type=AttackType.MELEE_WEAPON,
+        properties=[WeaponProperty.FINESSE],
+        range=Range(type=RangeType.REACH, normal=5)
+    )
+    skeleton.add_weapon(shortsword)
+
+    shortbow = Weapon(
         name="Shortbow",
-        description="A shortbow shot.",
-        ability=Ability.DEX,
-        damage=[Damage(dice=Dice(dice_count=1, dice_value=6, modifier=0), type=DamageType.PIERCING)],
+        damage=Damage(dice=Dice(dice_count=1, dice_value=6, modifier=0), type=DamageType.PIERCING),
         attack_type=AttackType.RANGED_WEAPON,
-        stats_block=skeleton
-    ))
+        properties=[WeaponProperty.RANGED],
+        range=Range(type=RangeType.RANGE, normal=80, long=320)
+    )
+    skeleton.add_weapon(shortbow)
 
     return skeleton
 
+class SkeletonAttack(Attack):
+    def __init__(self, weapon: Weapon, stats_block: 'StatsBlock'):
+        super().__init__(
+            name=weapon.name,
+            description=f"Attack with {weapon.name}",
+            cost=[ActionCost(type=ActionType.ACTION, cost=1)],
+            limited_usage=None,
+            attack_type=weapon.attack_type,
+            ability=Ability.DEX if weapon.attack_type == AttackType.RANGED_WEAPON else Ability.STR,
+            range=weapon.range,
+            damage=[weapon.damage],
+            targeting=Targeting(type=TargetType.ONE_TARGET),
+            stats_block=stats_block,
+            weapon=weapon
+        )
+
 def print_skeleton_details(skeleton: StatsBlock):
     print("\nSkeleton Details:\n")
-    print(f"Size: {skeleton.size}")
-    print(f"Type: {skeleton.type}")
-    print(f"Alignment: {skeleton.alignment}")
+    print(f"Size: {skeleton.size.value}")
+    print(f"Type: {skeleton.type.value}")
+    print(f"Alignment: {skeleton.alignment.value}")
     print(f"Ability Scores:")
-    for ability in skeleton.ability_scores.__dict__.values():
-        if isinstance(ability, AbilityScore):
-            print(f"  {ability.ability}: {ability.score} (Modifier: {ability.modifier})")
+    for ability in Ability:
+        score = getattr(skeleton.ability_scores, ability.value.lower())
+        print(f"  {ability.value}: {score.score} (Modifier: {score.modifier})")
     print(f"Speed: Walk {skeleton.speed.walk} ft")
     print(f"Armor Class: {skeleton.armor_class}")
     print(f"Hit Points: {skeleton.hit_points}")
     print(f"Proficiency Bonus: +{skeleton.proficiency_bonus}")
     print("Saving Throws:")
     for st in skeleton.ability_scores.saving_throws:
-        print(f"  {st.ability}: +{st.bonus}")
+        print(f"  {st.ability.value}: +{st.bonus}")
     print("Skills:")
-    for skill in skeleton.skills:
-        print(f"  {skill.skill}: +{skill.bonus}")
-    print("Damage Resistances: " + ", ".join([str(r) for r in skeleton.resistances]))
-    print("Damage Immunities: " + ", ".join([str(i) for i in skeleton.immunities]))
+    for skill in skeleton.ability_scores.skill_bonuses:
+        print(f"  {skill.skill.value}: +{skill.bonus}")
+    print("Damage Resistances: " + ", ".join([r.value for r in skeleton.resistances]))
+    print("Damage Immunities: " + ", ".join([i.value for i in skeleton.immunities]))
     print("Senses:")
     for sense in skeleton.senses:
-        print(f"  {sense.type}: {sense.range} ft")
-    print(f"Languages: {', '.join(skeleton.languages)}")
+        print(f"  {sense.type.value}: {sense.range} ft")
+    print(f"Languages: {', '.join([lang.value for lang in skeleton.languages])}")
     print(f"Challenge Rating: {skeleton.challenge} ({skeleton.experience_points} XP)")
     print("Special Traits:")
     for trait in skeleton.special_traits:
@@ -94,7 +102,8 @@ def print_skeleton_details(skeleton: StatsBlock):
     print("Actions:")
     for action in skeleton.actions:
         print(f"  - {action.name}: {action.action_docstring()}")
-    print(f"Equipment: {', '.join(skeleton.equipment)}")
+    print(f"Equipment: {', '.join([weapon.name for weapon in skeleton.weapons])}, "
+          f"{skeleton.armor.name if skeleton.armor else 'No Armor'}")
 
 def main():
     skeleton = create_skeleton()

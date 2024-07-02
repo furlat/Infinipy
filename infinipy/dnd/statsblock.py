@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, computed_field
 from enum import Enum
 from typing import List, Union
 from infinipy.dnd.docstrings import *
+import uuid
 
 class Size(str, Enum):
     TINY = "Tiny"
@@ -144,30 +145,53 @@ class StatusEffect(str, Enum):
 
 
 ## base models
+class Modifier(BaseModel):
+    value: int
+    source: str
+    duration: int = -1  # -1 for permanent, otherwise number of rounds
 
+class ModifiableValue(BaseModel):
+    base_value: int
+    modifiers: List[Modifier] = Field(default_factory=list)
+
+    @property
+    def total_value(self) -> int:
+        return self.base_value + sum(mod.value for mod in self.modifiers)
+
+    def add_modifier(self, value: int, source: str, duration: int = -1):
+        self.modifiers.append(Modifier(value=value, source=source, duration=duration))
+
+    def remove_modifier(self, source: str):
+        self.modifiers = [mod for mod in self.modifiers if mod.source != source]
+
+    def update_modifiers(self):
+        self.modifiers = [mod for mod in self.modifiers if mod.duration != 0]
+        for mod in self.modifiers:
+            if mod.duration > 0:
+                mod.duration -= 1
 
 class Speed(BaseModel):
-    walk: int 
-    fly: int = Field(0, description=fly_docstring)
-    swim: int = Field(0, description=swim_docstring)
-    burrow: int = Field(0, description=burrow_docstring)
-    climb: int = Field(0, description=climb_docstring)
+    walk: ModifiableValue
+    fly: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
+    swim: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
+    burrow: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
+    climb: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
 
 class AbilityScore(BaseModel):
     ability: Ability
-    score: int
+    score: ModifiableValue
 
     @computed_field
     def modifier(self) -> int:
-        return (self.score - 10) // 2
+        return (self.score.total_value - 10) // 2
 
 class AbilityScores(BaseModel):
-    strength: AbilityScore = Field(AbilityScore(ability=Ability.STR, score=10), description=strength_docstring)
-    dexterity: AbilityScore = Field(AbilityScore(ability=Ability.DEX, score=10), description=dexterity_docstring)
-    constitution: AbilityScore = Field(AbilityScore(ability=Ability.CON, score=10), description=constitution_docstring)
-    intelligence: AbilityScore = Field(AbilityScore(ability=Ability.INT, score=10), description=intelligence_docstring)
-    wisdom: AbilityScore = Field(AbilityScore(ability=Ability.WIS, score=10), description=wisdom_docstring)
-    charisma: AbilityScore = Field(AbilityScore(ability=Ability.CHA, score=10), description=charisma_docstring)
+    strength: AbilityScore = Field(AbilityScore(ability=Ability.STR, score=ModifiableValue(base_value=10)), description=strength_docstring)
+    dexterity: AbilityScore = Field(AbilityScore(ability=Ability.DEX, score=ModifiableValue(base_value=10)), description=dexterity_docstring)
+    constitution: AbilityScore = Field(AbilityScore(ability=Ability.CON, score=ModifiableValue(base_value=10)), description=constitution_docstring)
+    intelligence: AbilityScore = Field(AbilityScore(ability=Ability.INT, score=ModifiableValue(base_value=10)), description=intelligence_docstring)
+    wisdom: AbilityScore = Field(AbilityScore(ability=Ability.WIS, score=ModifiableValue(base_value=10)), description=wisdom_docstring)
+    charisma: AbilityScore = Field(AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=10)), description=charisma_docstring)
 
     @computed_field
     def saving_throws(self) -> List['SavingThrow']:
@@ -466,14 +490,27 @@ from pydantic import BaseModel, Field, computed_field
 from typing import List, Optional, Union
 from enum import Enum
 
-# Assuming all the necessary enums and other classes are defined above
+class ActionEconomy(BaseModel):
+    actions: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=1))
+    bonus_actions: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=1))
+    reactions: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=1))
+    movement: ModifiableValue
+
+    def __init__(self, speed: int):
+        super().__init__(movement=ModifiableValue(base_value=speed))
+
+    def reset(self):
+        for attr in ['actions', 'bonus_actions', 'reactions', 'movement']:
+            getattr(self, attr).modifiers.clear()
 
 class StatsBlock(BaseModel):
+    name: str = Field(..., description="name of the creature")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="unique identifier for the creature")
     size: Size = Field(..., description=size_docstring)
     type: MonsterType = Field(..., description=type_docstring)
     alignment: Alignment = Field(..., description=alignment_docstring)
     ability_scores: AbilityScores = Field(AbilityScores(), description=ability_scores_docstring)
-    speed: Speed = Field(Speed(walk=30, fly=0, swim=0, burrow=0, climb=0), description=speed_docstring)
+    speed: Speed = Field(Speed(walk=ModifiableValue(base_value=30)), description=speed_docstring)
     saving_throws: List[SavingThrow] = Field([], description=saving_throws_docstring)
     skills: List[SkillBonus] = Field([], description=skills_docstring)
     vulnerabilities: List[DamageType] = Field([], description=vulnerabilities_resistances_immunities_docstring)
@@ -495,14 +532,22 @@ class StatsBlock(BaseModel):
     shield: Optional[Shield] = None
     weapons: List[Weapon] = Field(default_factory=list)
     
-    base_ac: int = Field(default=10)
-    computed_hit_points: int = Field(default=0)
-    computed_passive_perception: int = Field(default=0)
+    base_ac: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=10))
+    computed_hit_points: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
+    computed_passive_perception: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
+
+    max_hit_points: ModifiableValue
+    current_hit_points: int
+    action_economy: ActionEconomy
 
     def __init__(self, **data):
         super().__init__(**data)
         self.add_default_actions()
         self._recompute_fields()
+        self._compute_hit_points()  # Explicitly call this after initialization
+        self.max_hit_points = self.computed_hit_points
+        self.current_hit_points = self.max_hit_points.total_value
+        self.action_economy = ActionEconomy(self.speed.walk.total_value)
 
     def add_default_actions(self):
         self.add_action(Dodge(stats_block=self))
@@ -513,8 +558,23 @@ class StatsBlock(BaseModel):
 
     def _recompute_fields(self):
         self._compute_armor_class()
-        self._compute_hit_points()
         self._compute_passive_perception()
+        
+        # Update all ModifiableValues
+        for field_name, field_value in self:
+            if isinstance(field_value, ModifiableValue):
+                field_value.update_modifiers()
+            elif isinstance(field_value, AbilityScores):
+                for ability_score in field_value.__dict__.values():
+                    if isinstance(ability_score, AbilityScore):
+                        ability_score.score.update_modifiers()
+            elif isinstance(field_value, Speed):
+                for speed_value in field_value.__dict__.values():
+                    if isinstance(speed_value, ModifiableValue):
+                        speed_value.update_modifiers()
+
+        self.action_economy.movement.base_value = self.speed.walk.total_value
+        self.action_economy.reset()
 
     @computed_field
     def proficiency_bonus(self) -> int:
@@ -522,7 +582,7 @@ class StatsBlock(BaseModel):
 
     @computed_field
     def armor_class(self) -> int:
-        return self.base_ac
+        return self.base_ac.total_value
 
     def _compute_armor_class(self):
         base_ac = 10 + self.ability_scores.dexterity.modifier
@@ -537,7 +597,7 @@ class StatsBlock(BaseModel):
         if self.shield:
             base_ac += self.shield.ac_bonus
 
-        self.base_ac = base_ac
+        self.base_ac.base_value = base_ac
 
     @computed_field
     def initiative(self) -> int:
@@ -545,18 +605,25 @@ class StatsBlock(BaseModel):
 
     @computed_field
     def hit_points(self) -> int:
-        return self.computed_hit_points
+        return self.computed_hit_points.total_value
 
     def _compute_hit_points(self):
-        self.computed_hit_points = max(1, (8 + self.ability_scores.constitution.modifier) * int(self.challenge))
+        # Use the challenge rating to determine the number of Hit Dice
+        hit_dice = max(1, int(self.challenge))
+        hit_dice_size = 8 if self.size in [Size.MEDIUM, Size.SMALL] else (6 if self.size == Size.TINY else 10)
+        
+        avg_hp = (hit_dice_size / 2 + 0.5) * hit_dice + (self.ability_scores.constitution.modifier * hit_dice)
+        self.computed_hit_points.base_value = max(1, int(avg_hp))
+        self.max_hit_points = self.computed_hit_points
+        self.current_hit_points = self.max_hit_points.total_value
 
     @computed_field
     def passive_perception(self) -> int:
-        return self.computed_passive_perception
+        return self.computed_passive_perception.total_value
 
     def _compute_passive_perception(self):
         perception_bonus = next((skill.bonus for skill in self.skills if skill.skill == Skills.PERCEPTION), 0)
-        self.computed_passive_perception = 10 + self.ability_scores.wisdom.modifier + perception_bonus
+        self.computed_passive_perception.base_value = 10 + self.ability_scores.wisdom.modifier + perception_bonus
 
     def add_action(self, action: Action):
         action.stats_block = self
@@ -603,6 +670,13 @@ class StatsBlock(BaseModel):
         if weapon.attack_type == AttackType.RANGED_WEAPON:
             ability = Ability.DEX
 
+        targeting = Targeting(
+            type=TargetType.ONE_TARGET,
+            range=weapon.range.normal,
+            line_of_sight=True,
+            requirement=TargetRequirementType.ANY
+        )
+
         attack = Attack(
             name=weapon.name,
             description=f"{weapon.attack_type.value} Attack with {weapon.name}",
@@ -612,7 +686,7 @@ class StatsBlock(BaseModel):
             ability=ability,
             range=weapon.range,
             damage=[weapon.damage],
-            targeting=Targeting(type=TargetType.ONE_TARGET),
+            targeting=targeting,
             stats_block=self,
             weapon=weapon
         )
@@ -627,73 +701,18 @@ class StatsBlock(BaseModel):
                 action.hit_bonus = action.hit_bonus  # This will trigger recomputation
                 action.average_damage = action.average_damage  # This will trigger recomputation
 
-if __name__ == "__main__":
-    test_monster = StatsBlock(
-        size=Size.MEDIUM,
-        type=MonsterType.BEAST,
-        alignment=Alignment.UNALIGNED,
-        challenge=2,
-        experience_points=450,
-        ability_scores=AbilityScores(
-            strength=AbilityScore(ability=Ability.STR, score=14),
-            dexterity=AbilityScore(ability=Ability.DEX, score=16),
-            constitution=AbilityScore(ability=Ability.CON, score=13),
-            intelligence=AbilityScore(ability=Ability.INT, score=8),
-            wisdom=AbilityScore(ability=Ability.WIS, score=12),
-            charisma=AbilityScore(ability=Ability.CHA, score=10)
-        ),
-        skills=[SkillBonus(skill=Skills.PERCEPTION, bonus=2)]
-    )
+    def safe_update(self, **kwargs):
+        updatable_fields = set(self.__fields__.keys()) - set(self.__computed_fields__)
+        for key, value in kwargs.items():
+            if key in updatable_fields:
+                if isinstance(getattr(self, key), ModifiableValue):
+                    getattr(self, key).base_value = value
+                else:
+                    setattr(self, key, value)
+        self._recompute_fields()
 
-    print(f"Strength modifier: {test_monster.ability_scores.strength.modifier}")
-    print(f"Dexterity saving throw bonus: {next(st for st in test_monster.ability_scores.saving_throws if st.ability == Ability.DEX).bonus}")
-    print(f"Proficiency Bonus: {test_monster.proficiency_bonus}")
-    print(f"Armor Class: {test_monster.armor_class}")
-    print(f"Initiative: {test_monster.initiative}")
-    print(f"Hit Points: {test_monster.hit_points}")
-    print(f"Passive Perception: {test_monster.passive_perception}")
+    def take_damage(self, damage: int):
+        self.current_hit_points = max(0, self.current_hit_points - damage)
 
-    # Create a weapon
-    bite_weapon = Weapon(
-        name="Bite",
-        damage=Damage(dice=Dice(dice_count=1, dice_value=6, modifier=0), type=DamageType.PIERCING),
-        attack_type=AttackType.MELEE_WEAPON,
-        properties=[],
-        range=Range(type=RangeType.REACH, normal=5)
-    )
-
-    # Add the weapon to the monster
-    test_monster.add_weapon(bite_weapon)
-
-    # Get the bite attack
-    bite_attack = next(action for action in test_monster.actions if action.name == "Bite")
-
-    print(f"\nBite Attack:")
-    print(f"Hit Bonus: +{bite_attack.hit_bonus}")
-    print(f"Average Damage: {bite_attack.average_damage}")
-    print(bite_attack.action_docstring())
-
-    print("\nAll Actions:")
-    for action in test_monster.actions:
-        print(f"- {action.name}")
-
-    # Test equipping armor and shield
-    leather_armor = Armor(
-        name="Leather Armor",
-        type=ArmorType.LIGHT,
-        base_ac=11,
-        dex_bonus=True
-    )
-    test_monster.equip_armor(leather_armor)
-    print(f"\nAC after equipping leather armor: {test_monster.armor_class}")
-
-    shield = Shield(name="Shield", ac_bonus=2)
-    test_monster.equip_shield(shield)
-    print(f"AC after equipping shield: {test_monster.armor_class}")
-
-    # Test unequipping
-    test_monster.unequip_shield()
-    print(f"AC after unequipping shield: {test_monster.armor_class}")
-
-    test_monster.unequip_armor()
-    print(f"AC after unequipping armor: {test_monster.armor_class}")
+    def heal(self, healing: int):
+        self.current_hit_points = min(self.max_hit_points.total_value, self.current_hit_points + healing)
