@@ -244,7 +244,7 @@ class StatsBlock(BaseModel):
         self.hit_point_bonus -= bonus
         self._recompute_fields()
 
-
+#fully initalize the models that were using the StatsBlock class as a forward reference
 Dodge.model_rebuild()
 Disengage.model_rebuild()
 Dash.model_rebuild()
