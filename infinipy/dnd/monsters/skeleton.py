@@ -21,17 +21,16 @@ def create_skeleton() -> StatsBlock:
             charisma=AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=5))
         ),
         speed=Speed(walk=ModifiableValue(base_value=30)),
-        armor_class=ArmorClass(base_ac=13),  # Will be recalculated after equipping armor
+        armor_class=ArmorClass(base_ac=ModifiableValue(base_value=13)),  # Will be recalculated after equipping armor
         vulnerabilities=[DamageType.BLUDGEONING],
         immunities=[DamageType.POISON],
         senses=[Sense(type=SensesType.DARKVISION, range=60)],
-        languages=["Common"],
+        languages=[Language.COMMON],
         challenge=0.25,
         experience_points=50,
         special_traits=[
             "Undead Nature: The skeleton doesn't require air, food, drink, or sleep."
         ],
-        # current_hit_points=10,
         hit_dice=Dice(dice_count=2, dice_value=8, modifier=0),
         action_economy=ActionEconomy(speed=30)
     )
@@ -78,7 +77,8 @@ class UndeadFortitude(Action):
     def execute(self, damage: int, damage_type: DamageType, is_critical: bool) -> bool:
         if self.stats_block.current_hit_points == 0 and damage_type != DamageType.RADIANT and not is_critical:
             dc = 5 + damage
-            con_save = self.stats_block.ability_scores.constitution.modifier + random.randint(1, 20)
+            con_modifier = self.stats_block.ability_scores.constitution.get_modifier(self.stats_block)
+            con_save = con_modifier + random.randint(1, 20)
             if con_save >= dc:
                 self.stats_block.current_hit_points = 1
                 return True
@@ -93,9 +93,9 @@ def print_skeleton_details(skeleton: StatsBlock):
     print("Ability Scores:")
     for ability in Ability:
         score = getattr(skeleton.ability_scores, ability.value.lower())
-        print(f"  {ability.value}: {score.score.total_value} (Modifier: {score.modifier})")
-    print(f"Speed: Walk {skeleton.speed.walk.get_value()} ft")
-    print(f"Armor Class: {skeleton.armor_class.compute_ac()}")
+        print(f"  {ability.value}: {score.score.get_value(skeleton)} (Modifier: {score.get_modifier(skeleton)})")
+    print(f"Speed: Walk {skeleton.speed.walk.get_value(skeleton)} ft")
+    print(f"Armor Class: {skeleton.armor_class.get_value(skeleton)}")
     print(f"Hit Points: {skeleton.current_hit_points}/{skeleton.max_hit_points}")
     print(f"Proficiency Bonus: +{skeleton.proficiency_bonus}")
     print("Damage Vulnerabilities: " + ", ".join([v.value for v in skeleton.vulnerabilities]))

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Dict, Any, Tuple
 import uuid
 from infinipy.dnd.core import Duration, DurationType, AbilityCheck, HEARING_DEPENDENT_ABILITIES
 from infinipy.dnd.actions import Attack
@@ -46,20 +46,25 @@ class Condition(BaseModel):
 # | **Helping**             | Lends aid to another creature, giving advantage on next ability check or attack roll.                       | `Attack`: Add ability to apply advantage; `AbilityCheck`: Add ability to apply advantage.                                   |
 
 class Blinded(Condition):
-    name: str = Field("Blinded")
+    name: str = "Blinded"
 
     def apply(self, stats_block: 'StatsBlock') -> None:
+        # Add disadvantage to all attacks
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.contextual_modifiers.add_self_disadvantage("Blinded", lambda src, tgt: True)
+                action.hit_bonus.self_effects.add_disadvantage_condition("Blinded", lambda src, tgt: True)
+        
+        # Give advantage to all attacks against this creature
+        stats_block.armor_class.base_ac.target_effects.add_advantage_condition("Blinded", lambda src, tgt: True)
 
     def remove(self, stats_block: 'StatsBlock') -> None:
+        # Remove disadvantage from all attacks
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.contextual_modifiers.self_disadvantages = [
-                    condition for condition in action.contextual_modifiers.self_disadvantages 
-                    if condition[0] != "Blinded"
-                ]
+                action.hit_bonus.self_effects.remove_effect("Blinded")
+        
+        # Remove advantage from all attacks against this creature
+        stats_block.armor_class.base_ac.target_effects.remove_effect("Blinded")
 
 
 
@@ -69,16 +74,25 @@ class Blinded(Condition):
 
 class Charmed(Condition):
     name: str = "Charmed"
+    source_entity_id: str
 
     def apply(self, stats_block: 'StatsBlock') -> None:
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.add_blocked_target(self.source_entity_id)
+                action.contextual_conditions["Charmed"] = self.charmed_attack_check
 
     def remove(self, stats_block: 'StatsBlock') -> None:
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.remove_blocked_target(self.source_entity_id)
+                action.contextual_conditions.pop("Charmed", None)
+
+    @staticmethod
+    def charmed_attack_check(context: Dict[str, Any]) -> Tuple[bool, str]:
+        target = context.get('target')
+        source = context.get('source')
+        if target and source and source.active_conditions.get("Charmed") and target.id == source.active_conditions.get("Charmed").source_entity_id:
+            return False, f"Cannot attack {target.name} due to being charmed."
+        return True, ""
 
 class Deafened(Condition):
     name: str = "Deafened"

@@ -3,6 +3,7 @@ from infinipy.dnd.equipment import Armor, ArmorType, Shield, Weapon, WeaponPrope
 from infinipy.dnd.actions import Action, ActionCost, ActionType, Targeting, TargetType, AttackType, Attack
 from infinipy.dnd.core import Ability, AbilityScores, AbilityScore, ModifiableValue, Dice, \
  Damage, DamageType, Range, RangeType, Size, MonsterType, Alignment, Speed, Skills, Sense, SensesType, Language, ActionEconomy, SkillBonus
+from infinipy.dnd.contextual import ContextualEffects
 
 class GoblinNimbleEscape(Action):
     def __init__(self, **data):
@@ -30,7 +31,7 @@ def create_goblin() -> StatsBlock:
             charisma=AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=8))
         ),
         speed=Speed(walk=ModifiableValue(base_value=30)),
-        armor_class=ArmorClass(base_ac=15),  # Will be recalculated after equipping armor and shield
+        armor_class=ArmorClass(base_ac=ModifiableValue(base_value=15)),
         challenge=0.25,
         experience_points=50,
         skills=[SkillBonus(skill=Skills.STEALTH, bonus=6)],
@@ -40,6 +41,8 @@ def create_goblin() -> StatsBlock:
         hit_dice=Dice(dice_count=2, dice_value=6, modifier=0),
         action_economy=ActionEconomy(speed=30)
     )
+
+    # ... rest of the function remains the same
 
     # Equip armor and shield
     leather_armor = Armor(name="Leather Armor", type=ArmorType.LIGHT, base_ac=11, dex_bonus=True)
@@ -80,9 +83,9 @@ def print_goblin_details(goblin: StatsBlock):
     print("Ability Scores:")
     for ability in Ability:
         score = getattr(goblin.ability_scores, ability.value.lower())
-        print(f"  {ability.value}: {score.score.total_value} (Modifier: {score.modifier})")
-    print(f"Speed: Walk {goblin.speed.walk.get_value()} ft")
-    print(f"Armor Class: {goblin.armor_class.compute_ac()}")
+        print(f"  {ability.value}: {score.score.get_value(goblin)} (Modifier: {score.get_modifier(goblin)})")
+    print(f"Speed: Walk {goblin.speed.walk.get_value(goblin)} ft")
+    print(f"Armor Class: {goblin.armor_class.get_value(goblin)}")
     print(f"Hit Points: {goblin.current_hit_points}/{goblin.max_hit_points}")
     print(f"Proficiency Bonus: +{goblin.proficiency_bonus}")
     print("Skills:")

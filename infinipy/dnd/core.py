@@ -9,6 +9,7 @@ from typing import List, Union
 from infinipy.dnd.docstrings import *
 import uuid
 import random
+from infinipy.dnd.contextual import ModifiableValue, AdvantageStatus, AdvantageTracker, ContextualEffects
 
 class Size(str, Enum):
     TINY = "Tiny"
@@ -131,10 +132,7 @@ class RechargeType(str, Enum):
     LONG_REST = "Long Rest"
     ROUND = "Round"
 
-class AdvantageStatus(str, Enum):
-    NONE = "None"
-    ADVANTAGE = "Advantage"
-    DISADVANTAGE = "Disadvantage"
+
 
 class StatusEffect(str, Enum):
     DISADVANTAGE_ON_ATTACK_ROLLS = "Disadvantage on Attack Rolls"
@@ -153,54 +151,72 @@ class DurationType(str, Enum):
 
 HEARING_DEPENDENT_ABILITIES = {Skills.PERCEPTION, Skills.PERFORMANCE, Skills.INSIGHT}
 
-class AdvantageTracker(BaseModel):
-    counter: int = 0
+class RangeType(str, Enum):
+    REACH = "Reach"
+    RANGE = "Range"
 
-    def add_advantage(self, stats_block: 'StatsBlock'):
-        if 'Advantage' not in stats_block.modifier_immunity:
-            self.counter += 1
+class TargetType(str, Enum):
+    SELF = "Self"
+    ONE_TARGET = "One Target"
+    MULTIPLE_TARGETS = "Multiple Targets"
+    AREA = "Area"
+    ALLY = "Ally"  # Added this line
 
-    def add_disadvantage(self, stats_block: 'StatsBlock'):
-        if 'Disadvantage' not in stats_block.modifier_immunity:
-            self.counter -= 1
+class ShapeType(str, Enum):
+    SPHERE = "Sphere"
+    CUBE = "Cube"
+    CONE = "Cone"
+    LINE = "Line"
+    CYLINDER = "Cylinder"
 
-    def reset(self):
-        self.counter = 0
+class TargetRequirementType(str, Enum):
+    HOSTILE = "Hostile"
+    ALLY = "Ally"
+    ANY = "Any"
 
-    @property
-    def status(self) -> AdvantageStatus:
-        if self.counter > 0:
-            return AdvantageStatus.ADVANTAGE
-        elif self.counter < 0:
-            return AdvantageStatus.DISADVANTAGE
+class Dice(BaseModel):
+    dice_count: int
+    dice_value: int
+    modifier: int
+    advantage_status: AdvantageStatus = AdvantageStatus.NONE
+    allow_critical: bool = True
+
+    def expected_value(self):
+        base_average = self.dice_count * (self.dice_value + 1) / 2 + self.modifier
+        if self.advantage_status == AdvantageStatus.ADVANTAGE:
+            advantage_average = (self.dice_value + 1) * (2 * self.dice_value + 1) / (3 * self.dice_value)
+            return self.dice_count * advantage_average + self.modifier
+        if self.advantage_status == AdvantageStatus.DISADVANTAGE:
+            disadvantage_average = self.dice_value * (self.dice_value + 1) / (3 * self.dice_value)
+            return self.dice_count * disadvantage_average + self.modifier
+        return int(base_average)
+
+    def roll_with_advantage(self) -> Tuple[int, str]:
+        if self.advantage_status == AdvantageStatus.ADVANTAGE:
+            rolls = [self.roll_single(), self.roll_single()]
+            best_roll = max(rolls)
+        elif self.advantage_status == AdvantageStatus.DISADVANTAGE:
+            rolls = [self.roll_single(), self.roll_single()]
+            best_roll = min(rolls)
         else:
-            return AdvantageStatus.NONE
+            rolls = [self.roll_single()]
+            best_roll = rolls[0]
 
-## base models
-class Modifier(BaseModel):
-    value: int
-    source: str
-    duration: int = -1  # -1 for permanent, otherwise number of rounds
+        if self.allow_critical:
+            if best_roll - self.modifier == 20:
+                return best_roll, "critical_hit"
+            elif best_roll - self.modifier == 1:
+                return best_roll, "critical_failure"
+        return best_roll, "normal"
 
+    def roll_single(self) -> int:
+        return sum(random.randint(1, self.dice_value) for _ in range(self.dice_count)) + self.modifier
 
-class ModifiableValue(BaseModel):
-    base_value: int
-    modifiers: Dict[str, int] = Field(default_factory=dict)
+    def roll(self, is_critical: bool = False) -> int:
+        if is_critical:
+            return sum(random.randint(1, self.dice_value) for _ in range(self.dice_count * 2)) + self.modifier
+        return self.roll_single()
 
-    @property
-    def total_value(self) -> int:
-        return self.base_value + sum(self.modifiers.values())
-
-    def add_modifier(self, source: str, value: int):
-        self.modifiers[source] = value
-
-    def remove_modifier(self, source: str):
-        self.modifiers.pop(source, None)
-
-    def get_value(self) -> int:
-        return max(0, self.total_value)  # Ensure the value doesn't go below 0
-
-    # We don't need an update_modifiers method as modifiers are updated when added or removed
 
 class Speed(BaseModel):
     walk: ModifiableValue
@@ -222,9 +238,14 @@ class AbilityScore(BaseModel):
     ability: Ability
     score: ModifiableValue
 
-    @computed_field
-    def modifier(self) -> int:
-        return (self.score.total_value - 10) // 2
+    def get_score(self, stats_block: 'StatsBlock', target: Any = None) -> int:
+        return self.score.get_value(stats_block, target)
+
+    def get_modifier(self, stats_block: 'StatsBlock', target: Any = None) -> int:
+        return (self.get_score(stats_block, target) - 10) // 2
+
+    def get_advantage_status(self, stats_block: 'StatsBlock', target: Any = None) -> AdvantageStatus:
+        return self.score.get_advantage_status(stats_block, target)
 
 class AbilityScores(BaseModel):
     strength: AbilityScore = Field(AbilityScore(ability=Ability.STR, score=ModifiableValue(base_value=10)), description=strength_docstring)
@@ -234,13 +255,11 @@ class AbilityScores(BaseModel):
     wisdom: AbilityScore = Field(AbilityScore(ability=Ability.WIS, score=ModifiableValue(base_value=10)), description=wisdom_docstring)
     charisma: AbilityScore = Field(AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=10)), description=charisma_docstring)
 
-    @computed_field
-    def saving_throws(self) -> List['SavingThrow']:
-        return [SavingThrow(ability=ability, bonus=getattr(self, ability.value.lower()).modifier)
+    def get_saving_throws(self, stats_block: 'StatsBlock') -> List['SavingThrow']:
+        return [SavingThrow(ability=ability, bonus=getattr(self, ability.value.lower()).get_modifier(stats_block))
                 for ability in Ability]
 
-    @computed_field
-    def skill_bonuses(self) -> List['SkillBonus']:
+    def get_skill_bonuses(self, stats_block: 'StatsBlock') -> List['SkillBonus']:
         skill_ability_map = {
             Skills.ATHLETICS: Ability.STR,
             Skills.ACROBATICS: Ability.DEX,
@@ -261,29 +280,54 @@ class AbilityScores(BaseModel):
             Skills.PERFORMANCE: Ability.CHA,
             Skills.PERSUASION: Ability.CHA,
         }
-        return [SkillBonus(skill=skill, bonus=getattr(self, skill_ability_map[skill].value.lower()).modifier)
+        return [SkillBonus(skill=skill, bonus=getattr(self, skill_ability_map[skill].value.lower()).get_modifier(stats_block))
                 for skill in Skills]
 
 class AbilityCheck(BaseModel):
     ability: Skills
     difficulty_class: int
-    advantage_tracker: AdvantageTracker = Field(default_factory=AdvantageTracker)
+    contextual_effects: ContextualEffects = Field(default_factory=ContextualEffects)
     automatic_fails: Set[Skills] = Field(default_factory=set)
 
-    def perform_check(self, stats_block: 'StatsBlock') -> bool:
+    def perform_check(self, stats_block: 'StatsBlock', target: Any = None) -> bool:
         if self.ability in self.automatic_fails:
             return False
 
-        ability_modifier = getattr(stats_block.ability_scores, self.ability.value.lower()).modifier
-        dice = Dice(dice_count=1, dice_value=20, modifier=ability_modifier, advantage_status=self.advantage_tracker.status)
+        ability = next(ab for ab in Ability if ab.value.upper() == self.ability.value.split('_')[0])
+        ability_score = getattr(stats_block.ability_scores, ability.value.lower())
+        
+        modifier = ability_score.get_modifier(stats_block, target)
+        bonus = self.contextual_effects.compute_bonus(stats_block, target)
+        total_modifier = modifier + bonus
+
+        advantage_status = self.get_advantage_status(stats_block, target)
+        
+        dice = Dice(dice_count=1, dice_value=20, modifier=total_modifier, advantage_status=advantage_status)
         roll, _ = dice.roll_with_advantage()
         return roll >= self.difficulty_class
 
-    def set_disadvantage(self):
-        self.advantage_tracker.add_disadvantage(None)
+    def get_advantage_status(self, stats_block: 'StatsBlock', target: Any = None) -> AdvantageStatus:
+        advantages = sum(1 for _, cond in self.contextual_effects.advantage_conditions if cond(stats_block, target))
+        disadvantages = sum(1 for _, cond in self.contextual_effects.disadvantage_conditions if cond(stats_block, target))
+        
+        if advantages > disadvantages:
+            return AdvantageStatus.ADVANTAGE
+        elif disadvantages > advantages:
+            return AdvantageStatus.DISADVANTAGE
+        else:
+            return AdvantageStatus.NONE
 
-    def set_advantage(self):
-        self.advantage_tracker.add_advantage(None)
+    def add_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
+        self.contextual_effects.add_advantage_condition(source, condition)
+
+    def add_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
+        self.contextual_effects.add_disadvantage_condition(source, condition)
+
+    def add_bonus(self, source: str, bonus: Callable[['StatsBlock', Any], int]):
+        self.contextual_effects.add_bonus(source, bonus)
+
+    def remove_effect(self, source: str):
+        self.contextual_effects.remove_effect(source)
 
 
 class SavingThrow(BaseModel):
@@ -336,28 +380,6 @@ class Duration(BaseModel):
         )
 
 
-class RangeType(str, Enum):
-    REACH = "Reach"
-    RANGE = "Range"
-
-class TargetType(str, Enum):
-    SELF = "Self"
-    ONE_TARGET = "One Target"
-    MULTIPLE_TARGETS = "Multiple Targets"
-    AREA = "Area"
-    ALLY = "Ally"  # Added this line
-
-class ShapeType(str, Enum):
-    SPHERE = "Sphere"
-    CUBE = "Cube"
-    CONE = "Cone"
-    LINE = "Line"
-    CYLINDER = "Cylinder"
-
-class TargetRequirementType(str, Enum):
-    HOSTILE = "Hostile"
-    ALLY = "Ally"
-    ANY = "Any"
 
 class Range(BaseModel):
     type: RangeType
@@ -392,48 +414,7 @@ class Targeting(BaseModel):
         return target_str
 
 
-class Dice(BaseModel):
-    dice_count: int
-    dice_value: int
-    modifier: int
-    advantage_status: AdvantageStatus = AdvantageStatus.NONE
-    allow_critical: bool = True
 
-    def expected_value(self):
-        base_average = self.dice_count * (self.dice_value + 1) / 2 + self.modifier
-        if self.advantage_status == AdvantageStatus.ADVANTAGE:
-            advantage_average = (self.dice_value + 1) * (2 * self.dice_value + 1) / (3 * self.dice_value)
-            return self.dice_count * advantage_average + self.modifier
-        if self.advantage_status == AdvantageStatus.DISADVANTAGE:
-            disadvantage_average = self.dice_value * (self.dice_value + 1) / (3 * self.dice_value)
-            return self.dice_count * disadvantage_average + self.modifier
-        return int(base_average)
-
-    def roll_with_advantage(self) -> Tuple[int, str]:
-        if self.advantage_status == AdvantageStatus.ADVANTAGE:
-            rolls = [self.roll_single(), self.roll_single()]
-            best_roll = max(rolls)
-        elif self.advantage_status == AdvantageStatus.DISADVANTAGE:
-            rolls = [self.roll_single(), self.roll_single()]
-            best_roll = min(rolls)
-        else:
-            rolls = [self.roll_single()]
-            best_roll = rolls[0]
-
-        if self.allow_critical:
-            if best_roll - self.modifier == 20:
-                return best_roll, "critical_hit"
-            elif best_roll - self.modifier == 1:
-                return best_roll, "critical_failure"
-        return best_roll, "normal"
-
-    def roll_single(self) -> int:
-        return sum(random.randint(1, self.dice_value) for _ in range(self.dice_count)) + self.modifier
-
-    def roll(self, is_critical: bool = False) -> int:
-        if is_critical:
-            return sum(random.randint(1, self.dice_value) for _ in range(self.dice_count * 2)) + self.modifier
-        return self.roll_single()
 
 
 
@@ -447,71 +428,6 @@ class Damage(BaseModel):
 
 
 
-
-
-class DirectionalContextualModifier(BaseModel):
-    self_bonuses: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], int]]] = Field(default_factory=list)
-    opponent_bonuses: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], int]]] = Field(default_factory=list)
-    self_advantages: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], bool]]] = Field(default_factory=list)
-    opponent_advantages: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], bool]]] = Field(default_factory=list)
-    self_disadvantages: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], bool]]] = Field(default_factory=list)
-    opponent_disadvantages: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], bool]]] = Field(default_factory=list)
-
-    def add_self_bonus(self, attribute: str, bonus: Callable[['StatsBlock', 'StatsBlock'], int]):
-        self.self_bonuses.append((attribute, bonus))
-
-    def add_opponent_bonus(self, attribute: str, bonus: Callable[['StatsBlock', 'StatsBlock'], int]):
-        self.opponent_bonuses.append((attribute, bonus))
-
-    def add_self_advantage(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.self_advantages.append((attribute, condition))
-
-    def add_opponent_advantage(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.opponent_advantages.append((attribute, condition))
-
-    def add_self_disadvantage(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.self_disadvantages.append((attribute, condition))
-
-    def add_opponent_disadvantage(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.opponent_disadvantages.append((attribute, condition))
-
-    def compute_self_bonus(self, source: 'StatsBlock', target: 'StatsBlock') -> int:
-        total_bonus = 0
-        for attribute, bonus in self.self_bonuses:
-            total_bonus += bonus(source, target)
-        return total_bonus
-
-    def compute_opponent_bonus(self, source: 'StatsBlock', target: 'StatsBlock') -> int:
-        total_bonus = 0
-        for attribute, bonus in self.opponent_bonuses:
-            total_bonus += bonus(source, target)
-        return total_bonus
-
-    def gives_self_advantage(self, source: 'StatsBlock', target: 'StatsBlock') -> bool:
-        for attribute, condition in self.self_advantages:
-            if condition(source, target):
-                return True
-        return False
-
-    def gives_opponent_advantage(self, source: 'StatsBlock', target: 'StatsBlock') -> bool:
-        for attribute, condition in self.opponent_advantages:
-            if condition(source, target):
-                return True
-        return False
-
-    def gives_self_disadvantage(self, source: 'StatsBlock', target: 'StatsBlock') -> bool:
-        for attribute, condition in self.self_disadvantages:
-            if condition(source, target):
-                return True
-        return False
-
-    def gives_opponent_disadvantage(self, source: 'StatsBlock', target: 'StatsBlock') -> bool:
-        for attribute, condition in self.opponent_disadvantages:
-            if condition(source, target):
-                return True
-        return False
-
-
 class ActionEconomy(BaseModel):
     actions: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=1))
     bonus_actions: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=1))
@@ -523,28 +439,28 @@ class ActionEconomy(BaseModel):
 
     def reset(self):
         for attr in ['actions', 'bonus_actions', 'reactions', 'movement']:
-            getattr(self, attr).modifiers.clear()
+            getattr(self, attr).base_value = getattr(self, attr).base_value
 
     def modify_actions(self, source: str, value: int):
-        self.actions.add_modifier(source, value)
+        self.actions.add_static_modifier(source, value)
 
     def modify_bonus_actions(self, source: str, value: int):
-        self.bonus_actions.add_modifier(source, value)
+        self.bonus_actions.add_static_modifier(source, value)
 
     def modify_reactions(self, source: str, value: int):
-        self.reactions.add_modifier(source, value)
+        self.reactions.add_static_modifier(source, value)
 
     def modify_movement(self, source: str, value: int):
-        self.movement.add_modifier(source, value)
+        self.movement.add_static_modifier(source, value)
 
     def remove_actions_modifier(self, source: str):
-        self.actions.remove_modifier(source)
+        self.actions.remove_static_modifier(source)
 
     def remove_bonus_actions_modifier(self, source: str):
-        self.bonus_actions.remove_modifier(source)
+        self.bonus_actions.remove_static_modifier(source)
 
     def remove_reactions_modifier(self, source: str):
-        self.reactions.remove_modifier(source)
+        self.reactions.remove_static_modifier(source)
 
     def remove_movement_modifier(self, source: str):
-        self.movement.remove_modifier(source)
+        self.movement.remove_static_modifier(source)
