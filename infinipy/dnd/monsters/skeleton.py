@@ -2,7 +2,8 @@ from infinipy.dnd.statsblock import StatsBlock
 from infinipy.dnd.equipment import Armor, ArmorType, Shield, Weapon, WeaponProperty, ArmorClass
 from infinipy.dnd.actions import Action, ActionCost, ActionType, Targeting, TargetType, AttackType, Attack
 from infinipy.dnd.core import Ability, AbilityScores, AbilityScore, ModifiableValue, Dice, \
- Damage, DamageType, Range, RangeType, Size, MonsterType, Alignment, Speed, Skills, Sense, SensesType, Language, ActionEconomy, SkillBonus
+ Damage, DamageType, Range, RangeType, Size, MonsterType, Alignment, Speed, Skills, Sense, SensesType, Language, ActionEconomy
+from infinipy.dnd.core import SkillSet, SavingThrow
 from typing import List
 import random
 
@@ -18,16 +19,19 @@ def create_skeleton() -> StatsBlock:
             constitution=AbilityScore(ability=Ability.CON, score=ModifiableValue(base_value=15)),
             intelligence=AbilityScore(ability=Ability.INT, score=ModifiableValue(base_value=6)),
             wisdom=AbilityScore(ability=Ability.WIS, score=ModifiableValue(base_value=8)),
-            charisma=AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=5))
+            charisma=AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=5)),
+            proficiency_bonus=ModifiableValue(base_value=2)
         ),
         speed=Speed(walk=ModifiableValue(base_value=30)),
-        armor_class=ArmorClass(base_ac=ModifiableValue(base_value=13)),  # Will be recalculated after equipping armor
+        armor_class=ArmorClass(base_ac=ModifiableValue(base_value=13)),
         vulnerabilities=[DamageType.BLUDGEONING],
         immunities=[DamageType.POISON],
         senses=[Sense(type=SensesType.DARKVISION, range=60)],
         languages=[Language.COMMON],
         challenge=0.25,
         experience_points=50,
+        skills=SkillSet(),
+        saving_throws={ability: SavingThrow(ability=ability, proficient=False) for ability in Ability},
         special_traits=[
             "Undead Nature: The skeleton doesn't require air, food, drink, or sleep."
         ],
@@ -77,11 +81,7 @@ class UndeadFortitude(Action):
     def execute(self, damage: int, damage_type: DamageType, is_critical: bool) -> bool:
         if self.stats_block.current_hit_points == 0 and damage_type != DamageType.RADIANT and not is_critical:
             dc = 5 + damage
-            con_modifier = self.stats_block.ability_scores.constitution.get_modifier(self.stats_block)
-            con_save = con_modifier + random.randint(1, 20)
-            if con_save >= dc:
-                self.stats_block.current_hit_points = 1
-                return True
+            return self.stats_block.perform_saving_throw(Ability.CON, dc)
         return False
 
 def print_skeleton_details(skeleton: StatsBlock):

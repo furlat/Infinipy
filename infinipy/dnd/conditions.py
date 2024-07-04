@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional, TYPE_CHECKING, Dict, Any, Tuple
 import uuid
-from infinipy.dnd.core import Duration, DurationType, AbilityCheck, HEARING_DEPENDENT_ABILITIES
+from infinipy.dnd.core import Duration, DurationType, HEARING_DEPENDENT_ABILITIES, Skills
 from infinipy.dnd.actions import Attack
 
 
@@ -77,83 +77,109 @@ class Charmed(Condition):
     source_entity_id: str
 
     def apply(self, stats_block: 'StatsBlock') -> None:
+        # Prevent attacking the charmer
         for action in stats_block.actions:
             if isinstance(action, Attack):
                 action.contextual_conditions["Charmed"] = self.charmed_attack_check
 
+        # Give advantage on social checks to the charmer
+        social_skills = [Skills.DECEPTION, Skills.INTIMIDATION, Skills.PERFORMANCE, Skills.PERSUASION]
+        for skill in social_skills:
+            print(f"appling charmed to {skill}")
+            skill_obj = stats_block.skills.get_skill(skill)
+            skill_obj.contextual_effects.add_advantage_condition("Charmed", self.charmed_social_check)
+
+        # self.duration.has_advanced = True  # Mark the first round as advanced
+
     def remove(self, stats_block: 'StatsBlock') -> None:
+        # Remove attack restriction
         for action in stats_block.actions:
             if isinstance(action, Attack):
                 action.contextual_conditions.pop("Charmed", None)
 
+        # Remove social check advantage
+        social_skills = [Skills.DECEPTION, Skills.INTIMIDATION, Skills.PERFORMANCE, Skills.PERSUASION]
+        for skill in social_skills:
+            stats_block.skills.get_skill(skill).contextual_effects.remove_effect("Charmed")
+
     @staticmethod
-    def charmed_attack_check(context: Dict[str, Any]) -> Tuple[bool, str]:
-        target = context.get('target')
-        source = context.get('source')
-        if target and source and source.active_conditions.get("Charmed") and target.id == source.active_conditions.get("Charmed").source_entity_id:
+    def charmed_attack_check(stats_block: 'StatsBlock', target:'StatsBlock') -> Tuple[bool, str]:
+        print("TRIGGERED ATTACK CHECKKKK")
+        source = stats_block
+        if target and source and "Charmed" in source.active_conditions and target.id == source.active_conditions["Charmed"].source_entity_id:
             return False, f"Cannot attack {target.name} due to being charmed."
         return True, ""
 
-class Deafened(Condition):
-    name: str = "Deafened"
+    @staticmethod
+    def charmed_social_check(stats_block: 'StatsBlock', target:'StatsBlock') -> bool:
+        print("GAGAGAGANG Checking for Charmed advantage on social checks")
+        source = stats_block
+        print(f"Source: {source}, Target: {target}")
+        if target and isinstance(target, StatsBlock):
+            if "Charmed" in target.active_conditions and target.active_conditions["Charmed"].source_entity_id == source.id:
+                return True
+        return False
 
-    def apply(self, stats_block: 'StatsBlock') -> None:
-        for action in stats_block.actions:
-            if isinstance(action, AbilityCheck) and action.ability in HEARING_DEPENDENT_ABILITIES:
-                action.automatic_fails.add(action.ability)
+# class Deafened(Condition):
+#     name: str = "Deafened"
 
-    def remove(self, stats_block: 'StatsBlock') -> None:
-        for action in stats_block.actions:
-            if isinstance(action, AbilityCheck) and action.ability in HEARING_DEPENDENT_ABILITIES:
-                action.automatic_fails.discard(action.ability)
+#     def apply(self, stats_block: 'StatsBlock') -> None:
+#         for action in stats_block.actions:
+#             if isinstance(action, AbilityCheck) and action.ability in HEARING_DEPENDENT_ABILITIES:
+#                 action.automatic_fails.add(action.ability)
 
-class Frightened(Condition):
-    name: str = "Frightened"
+#     def remove(self, stats_block: 'StatsBlock') -> None:
+#         for action in stats_block.actions:
+#             if isinstance(action, AbilityCheck) and action.ability in HEARING_DEPENDENT_ABILITIES:
+#                 action.automatic_fails.discard(action.ability)
 
-    def apply(self, stats_block: 'StatsBlock') -> None:
-        if stats_block.is_in_line_of_sight(self.source_entity_id):
-            for action in stats_block.actions:
-                if isinstance(action, Attack):
-                    action.contextual_modifiers.add_self_disadvantage("Frightened", lambda src, tgt: True)
-                if isinstance(action, AbilityCheck):
-                    action.set_disadvantage()
+# class Frightened(Condition):
+#     name: str = "Frightened"
 
-    def remove(self, stats_block: 'StatsBlock') -> None:
-        for action in stats_block.actions:
-            if isinstance(action, Attack):
-                action.contextual_modifiers.self_disadvantages = [
-                    condition for condition in action.contextual_modifiers.self_disadvantages 
-                    if condition[0] != "Frightened"
-                ]
-            if isinstance(action, AbilityCheck):
-                action.set_advantage()
+#     def apply(self, stats_block: 'StatsBlock') -> None:
+#         if stats_block.is_in_line_of_sight(self.source_entity_id):
+#             for action in stats_block.actions:
+#                 if isinstance(action, Attack):
+#                     action.contextual_modifiers.add_self_disadvantage("Frightened", lambda src, tgt: True)
+#                 if isinstance(action, AbilityCheck):
+#                     action.set_disadvantage()
 
-    def update(self, stats_block: 'StatsBlock') -> None:
-        if stats_block.is_in_line_of_sight(self.source_entity_id):
-            self.apply(stats_block)
-        else:
-            self.remove(stats_block)
+#     def remove(self, stats_block: 'StatsBlock') -> None:
+#         for action in stats_block.actions:
+#             if isinstance(action, Attack):
+#                 action.contextual_modifiers.self_disadvantages = [
+#                     condition for condition in action.contextual_modifiers.self_disadvantages 
+#                     if condition[0] != "Frightened"
+#                 ]
+#             if isinstance(action, AbilityCheck):
+#                 action.set_advantage()
 
-
-class Grappled(Condition):
-    name: str = "Grappled"
-
-    def apply(self, stats_block: 'StatsBlock') -> None:
-        for speed_type in ["walk", "fly", "swim", "burrow", "climb"]:
-            stats_block.speed.modify_speed(speed_type, self.id, -stats_block.speed.get_speed(speed_type))
-
-    def remove(self, stats_block: 'StatsBlock') -> None:
-        for speed_type in ["walk", "fly", "swim", "burrow", "climb"]:
-            stats_block.speed.remove_speed_modifier(speed_type, self.id)
+#     def update(self, stats_block: 'StatsBlock') -> None:
+#         if stats_block.is_in_line_of_sight(self.source_entity_id):
+#             self.apply(stats_block)
+#         else:
+#             self.remove(stats_block)
 
 
-class Incapacitated(Condition):
-    name: str = "Incapacitated"
+# class Grappled(Condition):
+#     name: str = "Grappled"
 
-    def apply(self, stats_block: 'StatsBlock') -> None:
-        stats_block.action_economy.modify_actions(self.id, -stats_block.action_economy.actions.base_value)
-        stats_block.action_economy.modify_reactions(self.id, -stats_block.action_economy.reactions.base_value)
+#     def apply(self, stats_block: 'StatsBlock') -> None:
+#         for speed_type in ["walk", "fly", "swim", "burrow", "climb"]:
+#             stats_block.speed.modify_speed(speed_type, self.id, -stats_block.speed.get_speed(speed_type))
 
-    def remove(self, stats_block: 'StatsBlock') -> None:
-        stats_block.action_economy.remove_actions_modifier(self.id)
-        stats_block.action_economy.remove_reactions_modifier(self.id)
+#     def remove(self, stats_block: 'StatsBlock') -> None:
+#         for speed_type in ["walk", "fly", "swim", "burrow", "climb"]:
+#             stats_block.speed.remove_speed_modifier(speed_type, self.id)
+
+
+# class Incapacitated(Condition):
+#     name: str = "Incapacitated"
+
+#     def apply(self, stats_block: 'StatsBlock') -> None:
+#         stats_block.action_economy.modify_actions(self.id, -stats_block.action_economy.actions.base_value)
+#         stats_block.action_economy.modify_reactions(self.id, -stats_block.action_economy.reactions.base_value)
+
+#     def remove(self, stats_block: 'StatsBlock') -> None:
+#         stats_block.action_economy.remove_actions_modifier(self.id)
+#         stats_block.action_economy.remove_reactions_modifier(self.id)

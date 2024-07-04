@@ -2,8 +2,9 @@ from infinipy.dnd.statsblock import StatsBlock
 from infinipy.dnd.equipment import Armor, ArmorType, Shield, Weapon, WeaponProperty, ArmorClass
 from infinipy.dnd.actions import Action, ActionCost, ActionType, Targeting, TargetType, AttackType, Attack
 from infinipy.dnd.core import Ability, AbilityScores, AbilityScore, ModifiableValue, Dice, \
- Damage, DamageType, Range, RangeType, Size, MonsterType, Alignment, Speed, Skills, Sense, SensesType, Language, ActionEconomy, SkillBonus
+ Damage, DamageType, Range, RangeType, Size, MonsterType, Alignment, Speed, Skills, Sense, SensesType, Language, ActionEconomy
 from infinipy.dnd.contextual import ContextualEffects
+from infinipy.dnd.core import SkillSet, SavingThrow
 
 class GoblinNimbleEscape(Action):
     def __init__(self, **data):
@@ -28,13 +29,15 @@ def create_goblin() -> StatsBlock:
             constitution=AbilityScore(ability=Ability.CON, score=ModifiableValue(base_value=10)),
             intelligence=AbilityScore(ability=Ability.INT, score=ModifiableValue(base_value=10)),
             wisdom=AbilityScore(ability=Ability.WIS, score=ModifiableValue(base_value=8)),
-            charisma=AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=8))
+            charisma=AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=8)),
+            proficiency_bonus=ModifiableValue(base_value=2)
         ),
         speed=Speed(walk=ModifiableValue(base_value=30)),
         armor_class=ArmorClass(base_ac=ModifiableValue(base_value=15)),
         challenge=0.25,
         experience_points=50,
-        skills=[SkillBonus(skill=Skills.STEALTH, bonus=6)],
+        skills=SkillSet(),
+        saving_throws={ability: SavingThrow(ability=ability, proficient=False) for ability in Ability},
         senses=[Sense(type=SensesType.DARKVISION, range=60)],
         languages=[Language.COMMON, Language.GOBLIN],
         special_traits=["Nimble Escape: The goblin can take the Disengage or Hide action as a bonus action on each of its turns."],
@@ -42,7 +45,8 @@ def create_goblin() -> StatsBlock:
         action_economy=ActionEconomy(speed=30)
     )
 
-    # ... rest of the function remains the same
+    # Set skill proficiency
+    goblin.set_skill_proficiency(Skills.STEALTH)
 
     # Equip armor and shield
     leather_armor = Armor(name="Leather Armor", type=ArmorType.LIGHT, base_ac=11, dex_bonus=True)
@@ -89,8 +93,10 @@ def print_goblin_details(goblin: StatsBlock):
     print(f"Hit Points: {goblin.current_hit_points}/{goblin.max_hit_points}")
     print(f"Proficiency Bonus: +{goblin.proficiency_bonus}")
     print("Skills:")
-    for skill in goblin.skills:
-        print(f"  {skill.skill.value}: +{skill.bonus}")
+    for skill in Skills:
+        skill_obj = goblin.skills.get_skill(skill)
+        if skill_obj.proficient:
+            print(f"  {skill.value}: +{skill_obj.get_bonus(goblin)}")
     print("Senses:")
     for sense in goblin.senses:
         print(f"  {sense.type.value}: {sense.range} ft")

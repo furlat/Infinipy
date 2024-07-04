@@ -21,9 +21,11 @@ class Action(BaseModel):
     stats_block: 'StatsBlock'
     contextual_conditions: Dict[str, Callable[[Dict[str, Any]], Tuple[bool, str]]] = Field(default_factory=dict)
 
-    def prerequisite(self, context: Dict[str, Any]) -> Tuple[bool, str]:
+    def prerequisite(self, stats_block: 'StatsBlock', target:'StatsBlock') -> Tuple[bool, str]:
+        source = stats_block
+
         for condition_name, condition_check in self.contextual_conditions.items():
-            can_perform, reason = condition_check(context)
+            can_perform, reason = condition_check(source,target)
             if not can_perform:
                 return False, reason
         return True, ""
@@ -70,15 +72,6 @@ class Attack(Action):
         return f"{self.attack_type.value} Attack: +{self.hit_bonus.get_value(self.stats_block)} to hit, {attack_range}, {self.targeting.target_docstring()}. Hit: {damage_string}. Average damage: {self.average_damage:.1f}."
 
     # ... rest of the class remains the same
-    def can_attack(self, target_id: str) -> bool:
-        return target_id not in self.blocked_targets
-
-    def add_blocked_target(self, target_id: str):
-        self.blocked_targets.add(target_id)
-
-    def remove_blocked_target(self, target_id: str):
-        self.blocked_targets.discard(target_id)
-
     def add_contextual_advantage(self, source: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
         self.hit_bonus.self_effects.add_advantage_condition(source, condition)
 
@@ -90,7 +83,7 @@ class Attack(Action):
 
     def roll_to_hit(self, target: 'StatsBlock', verbose: bool = False) -> Union[bool, Tuple[bool, Dict[str, Any]]]:
         total_hit_bonus = self.hit_bonus.get_value(self.stats_block, target)
-        
+    
         advantage_status = AdvantageStatus.NONE
         if self.hit_bonus.self_effects.has_disadvantage(self.stats_block, target):
             advantage_status = AdvantageStatus.DISADVANTAGE

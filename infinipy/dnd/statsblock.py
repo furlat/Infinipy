@@ -1,9 +1,9 @@
-from typing import List, Dict, Optional, Set, Tuple
+from typing import List, Dict, Optional, Set, Tuple, Any, Union
 from pydantic import BaseModel, Field, computed_field
 from infinipy.dnd.docstrings import *
 import uuid
 from infinipy.dnd.contextual import ModifiableValue, ContextualEffects
-from infinipy.dnd.core import Ability, Size, MonsterType, Alignment, AbilityScores, Speed, SavingThrow, SkillBonus, DamageType, \
+from infinipy.dnd.core import Ability, SkillSet,Size, MonsterType, Alignment, AbilityScores, Speed, SavingThrow, SkillBonus, DamageType, \
     Sense, Language, Dice, Skills, Targeting, ActionEconomy, ActionCost, ActionType, TargetRequirementType, TargetType
 from infinipy.dnd.conditions import Condition
 from infinipy.dnd.actions import Action, Attack, Dash, Disengage, Dodge, Help, Hide, AttackType
@@ -15,10 +15,10 @@ class StatsBlock(BaseModel):
     size: Size = Field(..., description=size_docstring)
     type: MonsterType = Field(..., description=type_docstring)
     alignment: Alignment = Field(..., description=alignment_docstring)
-    ability_scores: AbilityScores = Field(AbilityScores(), description=ability_scores_docstring)
     speed: Speed = Field(Speed(walk=ModifiableValue(base_value=30)), description=speed_docstring)
-    saving_throws: List[SavingThrow] = Field([], description=saving_throws_docstring)
-    skills: List[SkillBonus] = Field([], description=skills_docstring)
+    ability_scores: AbilityScores = Field(default_factory=AbilityScores)
+    saving_throws: Dict[Ability, SavingThrow] = Field(default_factory=lambda: {ability: SavingThrow(ability=ability, proficient=False) for ability in Ability})
+    skills: SkillSet = Field(default_factory=SkillSet)
     vulnerabilities: List[DamageType] = Field([], description=vulnerabilities_resistances_immunities_docstring)
     resistances: List[DamageType] = Field([], description=vulnerabilities_resistances_immunities_docstring)
     immunities: List[DamageType] = Field([], description=vulnerabilities_resistances_immunities_docstring)
@@ -118,13 +118,14 @@ class StatsBlock(BaseModel):
         return [cond for key, cond in self.active_conditions.items() if key == name]
 
 
-    @computed_field
-    def proficiency_bonus(self) -> int:
-        return max(2, ((self.challenge - 1) // 4) + 2)
 
     @computed_field
     def armor_class_value(self) -> int:
         return self.armor_class.get_value(self)
+
+    @computed_field
+    def proficiency_bonus(self) -> int:
+        return self.ability_scores.proficiency_bonus.get_value(self)
 
     @computed_field
     def initiative(self) -> int:
@@ -135,8 +136,30 @@ class StatsBlock(BaseModel):
         return self.computed_passive_perception.get_value(self)
 
     def _compute_passive_perception(self):
-        perception_bonus = next((skill.bonus for skill in self.skills if skill.skill == Skills.PERCEPTION), 0)
-        self.computed_passive_perception.base_value = 10 + self.ability_scores.wisdom.get_modifier(self) + perception_bonus
+        perception_skill = self.skills.get_skill(Skills.PERCEPTION)
+        self.computed_passive_perception.base_value = 10 + perception_skill.get_bonus(self)
+
+    def perform_ability_check(self, ability: Ability, dc: int, target: Any = None) -> bool:
+        return self.ability_scores.get_ability_score(ability).perform_ability_check(self, dc, target)
+
+    def perform_skill_check(self, skill: Skills, dc: int, context: Any = None, return_roll: bool = False) -> Union[bool, Tuple[int, int, int]]:
+        skill_obj = self.skills.get_skill(skill)
+        roll, total = skill_obj.perform_check(self, dc, context, return_roll=True)
+        if return_roll:
+            return roll, total, dc
+        return total >= dc
+
+    def perform_saving_throw(self, ability: Ability, dc: int, target: Any = None) -> bool:
+        return self.saving_throws[ability].perform_save(self, dc, target)
+
+    def set_skill_proficiency(self, skill: Skills):
+        self.skills.set_proficiency(skill)
+
+    def set_skill_expertise(self, skill: Skills):
+        self.skills.set_expertise(skill)
+
+    def set_saving_throw_proficiency(self, ability: Ability):
+        self.saving_throws[ability].proficient = True
 
     def add_action(self, action: Action):
         action.stats_block = self

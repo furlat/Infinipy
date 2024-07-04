@@ -234,9 +234,14 @@ class Speed(BaseModel):
     def remove_speed_modifier(self, speed_type: str, source: str):
         getattr(self, speed_type).remove_modifier(source)
 
+
+
+
 class AbilityScore(BaseModel):
     ability: Ability
     score: ModifiableValue
+    contextual_effects: ContextualEffects = Field(default_factory=ContextualEffects)
+    automatic_fails: Set[Skills] = Field(default_factory=set)
 
     def get_score(self, stats_block: 'StatsBlock', target: Any = None) -> int:
         return self.score.get_value(stats_block, target)
@@ -245,58 +250,13 @@ class AbilityScore(BaseModel):
         return (self.get_score(stats_block, target) - 10) // 2
 
     def get_advantage_status(self, stats_block: 'StatsBlock', target: Any = None) -> AdvantageStatus:
-        return self.score.get_advantage_status(stats_block, target)
+        return self.contextual_effects.get_advantage_status(stats_block, target)
 
-class AbilityScores(BaseModel):
-    strength: AbilityScore = Field(AbilityScore(ability=Ability.STR, score=ModifiableValue(base_value=10)), description=strength_docstring)
-    dexterity: AbilityScore = Field(AbilityScore(ability=Ability.DEX, score=ModifiableValue(base_value=10)), description=dexterity_docstring)
-    constitution: AbilityScore = Field(AbilityScore(ability=Ability.CON, score=ModifiableValue(base_value=10)), description=constitution_docstring)
-    intelligence: AbilityScore = Field(AbilityScore(ability=Ability.INT, score=ModifiableValue(base_value=10)), description=intelligence_docstring)
-    wisdom: AbilityScore = Field(AbilityScore(ability=Ability.WIS, score=ModifiableValue(base_value=10)), description=wisdom_docstring)
-    charisma: AbilityScore = Field(AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=10)), description=charisma_docstring)
-
-    def get_saving_throws(self, stats_block: 'StatsBlock') -> List['SavingThrow']:
-        return [SavingThrow(ability=ability, bonus=getattr(self, ability.value.lower()).get_modifier(stats_block))
-                for ability in Ability]
-
-    def get_skill_bonuses(self, stats_block: 'StatsBlock') -> List['SkillBonus']:
-        skill_ability_map = {
-            Skills.ATHLETICS: Ability.STR,
-            Skills.ACROBATICS: Ability.DEX,
-            Skills.SLEIGHT_OF_HAND: Ability.DEX,
-            Skills.STEALTH: Ability.DEX,
-            Skills.ARCANA: Ability.INT,
-            Skills.HISTORY: Ability.INT,
-            Skills.INVESTIGATION: Ability.INT,
-            Skills.NATURE: Ability.INT,
-            Skills.RELIGION: Ability.INT,
-            Skills.ANIMAL_HANDLING: Ability.WIS,
-            Skills.INSIGHT: Ability.WIS,
-            Skills.MEDICINE: Ability.WIS,
-            Skills.PERCEPTION: Ability.WIS,
-            Skills.SURVIVAL: Ability.WIS,
-            Skills.DECEPTION: Ability.CHA,
-            Skills.INTIMIDATION: Ability.CHA,
-            Skills.PERFORMANCE: Ability.CHA,
-            Skills.PERSUASION: Ability.CHA,
-        }
-        return [SkillBonus(skill=skill, bonus=getattr(self, skill_ability_map[skill].value.lower()).get_modifier(stats_block))
-                for skill in Skills]
-
-class AbilityCheck(BaseModel):
-    ability: Skills
-    difficulty_class: int
-    contextual_effects: ContextualEffects = Field(default_factory=ContextualEffects)
-    automatic_fails: Set[Skills] = Field(default_factory=set)
-
-    def perform_check(self, stats_block: 'StatsBlock', target: Any = None) -> bool:
+    def perform_ability_check(self, stats_block: 'StatsBlock', dc: int, target: Any = None) -> bool:
         if self.ability in self.automatic_fails:
             return False
 
-        ability = next(ab for ab in Ability if ab.value.upper() == self.ability.value.split('_')[0])
-        ability_score = getattr(stats_block.ability_scores, ability.value.lower())
-        
-        modifier = ability_score.get_modifier(stats_block, target)
+        modifier = self.get_modifier(stats_block, target)
         bonus = self.contextual_effects.compute_bonus(stats_block, target)
         total_modifier = modifier + bonus
 
@@ -304,18 +264,7 @@ class AbilityCheck(BaseModel):
         
         dice = Dice(dice_count=1, dice_value=20, modifier=total_modifier, advantage_status=advantage_status)
         roll, _ = dice.roll_with_advantage()
-        return roll >= self.difficulty_class
-
-    def get_advantage_status(self, stats_block: 'StatsBlock', target: Any = None) -> AdvantageStatus:
-        advantages = sum(1 for _, cond in self.contextual_effects.advantage_conditions if cond(stats_block, target))
-        disadvantages = sum(1 for _, cond in self.contextual_effects.disadvantage_conditions if cond(stats_block, target))
-        
-        if advantages > disadvantages:
-            return AdvantageStatus.ADVANTAGE
-        elif disadvantages > advantages:
-            return AdvantageStatus.DISADVANTAGE
-        else:
-            return AdvantageStatus.NONE
+        return roll >= dc
 
     def add_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
         self.contextual_effects.add_advantage_condition(source, condition)
@@ -329,11 +278,142 @@ class AbilityCheck(BaseModel):
     def remove_effect(self, source: str):
         self.contextual_effects.remove_effect(source)
 
+class AbilityScores(BaseModel):
+    strength: AbilityScore = Field(default_factory=lambda: AbilityScore(ability=Ability.STR, score=ModifiableValue(base_value=10)))
+    dexterity: AbilityScore = Field(default_factory=lambda: AbilityScore(ability=Ability.DEX, score=ModifiableValue(base_value=10)))
+    constitution: AbilityScore = Field(default_factory=lambda: AbilityScore(ability=Ability.CON, score=ModifiableValue(base_value=10)))
+    intelligence: AbilityScore = Field(default_factory=lambda: AbilityScore(ability=Ability.INT, score=ModifiableValue(base_value=10)))
+    wisdom: AbilityScore = Field(default_factory=lambda: AbilityScore(ability=Ability.WIS, score=ModifiableValue(base_value=10)))
+    charisma: AbilityScore = Field(default_factory=lambda: AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=10)))
+    proficiency_bonus: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=2))
+
+    def get_ability_check(self, ability: Ability, stats_block: 'StatsBlock', target: Any = None) -> int:
+        ability_score = getattr(self, ability.value.lower())
+        return ability_score.get_modifier(stats_block, target)
+
+class Skill(BaseModel):
+    ability: Ability
+    proficient: bool = False
+    expertise: bool = False
+    self_effects: ContextualEffects = Field(default_factory=ContextualEffects)
+    target_effects: ContextualEffects = Field(default_factory=ContextualEffects)
+    advantage_tracker: AdvantageTracker = Field(default_factory=AdvantageTracker)
+
+    def get_bonus(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None) -> int:
+        ability_bonus = stats_block.ability_scores.get_ability_check(self.ability, stats_block, target)
+        proficiency_bonus = stats_block.ability_scores.proficiency_bonus.get_value(stats_block, target)
+        if self.expertise:
+            proficiency_bonus *= 2
+        elif not self.proficient:
+            proficiency_bonus = 0
+        contextual_bonus = self.self_effects.compute_bonus(stats_block, target)
+        if target:
+            contextual_bonus += target.skills.get_skill(self.name).target_effects.compute_bonus(target, stats_block)
+        return ability_bonus + proficiency_bonus + contextual_bonus
+
+    def get_advantage_status(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None) -> AdvantageStatus:
+        print(f"Getting advantage status for skill check for source {stats_block.name} and target {target.name}")
+        self.advantage_tracker.reset()
+        self.self_effects.apply_advantage_disadvantage(stats_block, target, self.advantage_tracker)
+        return self.advantage_tracker.status
+
+    def perform_check(self, stats_block: 'StatsBlock', dc: int, target:Optional['StatsBlock'] = None, return_roll: bool = False) -> Union[bool, Tuple[int, int]]:
+        
+        print(f"Performing skill check for {self.ability.value} with DC {dc} and source {stats_block.name} and target {target.name}")
+        bonus = self.get_bonus(stats_block, target)
+        advantage_status = self.get_advantage_status(stats_block, target)
+        print("advantage status:", advantage_status)
+        dice = Dice(dice_count=1, dice_value=20, modifier=bonus, advantage_status=advantage_status)
+        roll, _ = dice.roll_with_advantage()
+        total = roll + bonus
+        if return_roll:
+            return roll, total
+        return total >= dc
+
+    def add_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
+        self.contextual_effects.add_advantage_condition(source, condition)
+
+    def add_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
+        self.contextual_effects.add_disadvantage_condition(source, condition)
+
+    def add_bonus(self, source: str, bonus: Callable[['StatsBlock', Any], int]):
+        self.contextual_effects.add_bonus(source, bonus)
+
+    def remove_effect(self, source: str):
+        self.contextual_effects.remove_effect(source)
+
+class SkillSet(BaseModel):
+    acrobatics: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX))
+    animal_handling: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS))
+    arcana: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT))
+    athletics: Skill = Field(default_factory=lambda: Skill(ability=Ability.STR))
+    deception: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA))
+    history: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT))
+    insight: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS))
+    intimidation: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA))
+    investigation: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT))
+    medicine: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS))
+    nature: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT))
+    perception: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS))
+    performance: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA))
+    persuasion: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA))
+    religion: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT))
+    sleight_of_hand: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX))
+    stealth: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX))
+    survival: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS))
+
+    proficiencies: Set[Skills] = Field(default_factory=set)
+    expertise: Set[Skills] = Field(default_factory=set)
+
+    def get_skill(self, skill: Skills) -> Skill:
+        attribute_name = skill.value.lower().replace(' ', '_')
+        return getattr(self, attribute_name)
+    
+    def set_proficiency(self, skill: Skills):
+        self.proficiencies.add(skill)
+        self.get_skill(skill).proficient = True
+
+    def set_expertise(self, skill: Skills):
+        self.expertise.add(skill)
+        self.get_skill(skill).expertise = True
+
+    def perform_skill_check(self, skill: Skills, stats_block: 'StatsBlock', dc: int, target: Any = None) -> bool:
+        return self.get_skill(skill).perform_check(stats_block, dc, target)
 
 class SavingThrow(BaseModel):
     ability: Ability
-    bonus: int
+    proficient: bool
+    contextual_effects: ContextualEffects = Field(default_factory=ContextualEffects)
 
+    def get_bonus(self, stats_block: 'StatsBlock', target: Any = None) -> int:
+        ability_bonus = stats_block.ability_scores.get_ability_check(self.ability, stats_block, target)
+        proficiency_bonus = stats_block.ability_scores.proficiency_bonus.get_value(stats_block, target) if self.proficient else 0
+        contextual_bonus = self.contextual_effects.compute_bonus(stats_block, target)
+        return ability_bonus + proficiency_bonus + contextual_bonus
+
+    def get_advantage_status(self, stats_block: 'StatsBlock', target: Any = None) -> AdvantageStatus:
+        return self.contextual_effects.get_advantage_status(stats_block, target)
+
+    def perform_save(self, stats_block: 'StatsBlock', dc: int, target: Any = None) -> bool:
+        bonus = self.get_bonus(stats_block, target)
+        advantage_status = self.get_advantage_status(stats_block, target)
+        dice = Dice(dice_count=1, dice_value=20, modifier=bonus, advantage_status=advantage_status)
+        roll, _ = dice.roll_with_advantage()
+        return roll >= dc
+
+    def add_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
+        self.contextual_effects.add_advantage_condition(source, condition)
+
+    def add_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
+        self.contextual_effects.add_disadvantage_condition(source, condition)
+
+    def add_bonus(self, source: str, bonus: Callable[['StatsBlock', Any], int]):
+        self.contextual_effects.add_bonus(source, bonus)
+
+    def remove_effect(self, source: str):
+        self.contextual_effects.remove_effect(source)
+
+    
 class SkillBonus(BaseModel):
     skill: Skills
     bonus: int

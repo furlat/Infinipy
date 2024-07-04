@@ -2,7 +2,7 @@
 
 - Full filepath to the merged directory: `C:\Users\Tommaso\Documents\Dev\Infinipy\infinipy\dnd`
 
-- Created: `2024-07-03T11:56:44.296466`
+- Created: `2024-07-03T17:08:24.227608`
 
 ## init
 
@@ -16,7 +16,8 @@ from pydantic import BaseModel, Field, computed_field
 
 from typing import List, Optional, Union, Dict, Any, Tuple, Set, Callable, TYPE_CHECKING
 from enum import Enum
-from infinipy.dnd.core import ModifiableValue, Dice, Ability, DamageType, Damage, Range, RangeType, ShapeType, TargetType, TargetRequirementType, StatusEffect, Duration, LimitedUsage, UsageType, RechargeType, ActionType, ActionCost, Targeting, AdvantageTracker, DirectionalContextualModifier
+from infinipy.dnd.contextual import ModifiableValue, AdvantageStatus
+from infinipy.dnd.core import  Dice, Ability, DamageType, Damage, Range, RangeType, ShapeType, TargetType, TargetRequirementType, StatusEffect, Duration, LimitedUsage, UsageType, RechargeType, ActionType, ActionCost, Targeting, AdvantageTracker
 from infinipy.dnd.equipment import  Weapon, Armor, WeaponProperty, ArmorType
 
 
@@ -32,11 +33,15 @@ class Action(BaseModel):
     status_effects: List[StatusEffect] = Field(default_factory=list)
     duration: Union[Duration, None] = None
     stats_block: 'StatsBlock'
+    contextual_conditions: Dict[str, Callable[[Dict[str, Any]], Tuple[bool, str]]] = Field(default_factory=dict)
 
-    def action_docstring(self):
-        target_description = self.targeting.target_docstring()
-        return f"{self.description} Target: {target_description}."
-
+    def prerequisite(self, context: Dict[str, Any]) -> Tuple[bool, str]:
+        for condition_name, condition_check in self.contextual_conditions.items():
+            can_perform, reason = condition_check(context)
+            if not can_perform:
+                return False, reason
+        return True, ""
+    
 class AttackType(str, Enum):
     MELEE_WEAPON = "Melee Weapon"
     RANGED_WEAPON = "Ranged Weapon"
@@ -51,31 +56,34 @@ class Attack(Action):
     damage: List[Damage]
     weapon: Optional[Weapon] = None
     additional_effects: Union[str, None] = None
-    advantage_tracker: AdvantageTracker = Field(default_factory=AdvantageTracker)
     blocked_targets: Set[str] = Field(default_factory=set)
     is_critical_hit: bool = False
-    contextual_modifiers: DirectionalContextualModifier = Field(default_factory=DirectionalContextualModifier)
+    hit_bonus: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
 
-    @computed_field
-    def hit_bonus(self) -> int:
-        ability_modifier = getattr(self.stats_block.ability_scores, self.ability.value.lower()).modifier
-        return ability_modifier + self.stats_block.proficiency_bonus
+    def __init__(self, **data):
+        super().__init__(**data)
+        self.update_hit_bonus()
+
+    def update_hit_bonus(self):
+        ability_modifier = getattr(self.stats_block.ability_scores, self.ability.value.lower()).get_modifier(self.stats_block)
+        self.hit_bonus.base_value = ability_modifier + self.stats_block.proficiency_bonus
 
     @computed_field
     def average_damage(self) -> float:
-        ability_modifier = getattr(self.stats_block.ability_scores, self.ability.value.lower()).modifier
+        ability_modifier = getattr(self.stats_block.ability_scores, self.ability.value.lower()).get_modifier(self.stats_block)
         return sum(d.dice.expected_value() + ability_modifier for d in self.damage)
 
     def action_docstring(self):
         attack_range = str(self.range)
-        ability_modifier = getattr(self.stats_block.ability_scores, self.ability.value.lower()).modifier
+        ability_modifier = getattr(self.stats_block.ability_scores, self.ability.value.lower()).get_modifier(self.stats_block)
         damage_strings = [
             f"{d.dice.dice_count}d{d.dice.dice_value} + {ability_modifier} {d.type.value} damage"
             for d in self.damage
         ]
         damage_string = " plus ".join(damage_strings)
-        return f"{self.attack_type.value} Attack: +{self.hit_bonus} to hit, {attack_range}, {self.targeting.target_docstring()}. Hit: {damage_string}. Average damage: {self.average_damage:.1f}."
+        return f"{self.attack_type.value} Attack: +{self.hit_bonus.get_value(self.stats_block)} to hit, {attack_range}, {self.targeting.target_docstring()}. Hit: {damage_string}. Average damage: {self.average_damage:.1f}."
 
+    # ... rest of the class remains the same
     def can_attack(self, target_id: str) -> bool:
         return target_id not in self.blocked_targets
 
@@ -85,62 +93,54 @@ class Attack(Action):
     def remove_blocked_target(self, target_id: str):
         self.blocked_targets.discard(target_id)
 
-    def add_contextual_advantage(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.contextual_modifiers.add_self_advantage(attribute, condition)
+    def add_contextual_advantage(self, source: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
+        self.hit_bonus.self_effects.add_advantage_condition(source, condition)
 
-    def add_contextual_disadvantage(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.contextual_modifiers.add_self_disadvantage(attribute, condition)
+    def add_contextual_disadvantage(self, source: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
+        self.hit_bonus.self_effects.add_disadvantage_condition(source, condition)
 
-    def add_contextual_bonus(self, attribute: str, bonus: Callable[['StatsBlock', 'StatsBlock'], int]):
-        self.contextual_modifiers.add_self_bonus(attribute, bonus)
+    def add_contextual_bonus(self, source: str, bonus: Callable[['StatsBlock', 'StatsBlock'], int]):
+        self.hit_bonus.self_effects.add_bonus(source, bonus)
 
     def roll_to_hit(self, target: 'StatsBlock', verbose: bool = False) -> Union[bool, Tuple[bool, Dict[str, Any]]]:
-        self.advantage_tracker.reset()  # Ensure the tracker is reset at the beginning of each attack roll
-
-        # Check for conditions on the attacker
-        if self.contextual_modifiers.gives_self_disadvantage(self.stats_block, target):
-            self.advantage_tracker.add_disadvantage(self.stats_block)
-        if self.contextual_modifiers.gives_self_advantage(self.stats_block, target):
-            self.advantage_tracker.add_advantage(self.stats_block)
-
-        # Check for conditions on the target
-        if target.armor_class.give_disadvantage(self.stats_block):
-            self.advantage_tracker.add_disadvantage(self.stats_block)
-        if target.armor_class.give_advantage(self.stats_block):
-            self.advantage_tracker.add_advantage(self.stats_block)
-
-        self_bonus = self.contextual_modifiers.compute_self_bonus(self.stats_block, target)
-        opponent_bonus = self.contextual_modifiers.compute_opponent_bonus(self.stats_block, target)
+        total_hit_bonus = self.hit_bonus.get_value(self.stats_block, target)
         
-        dice = Dice(
-            dice_count=1,
-            dice_value=20,
-            modifier=self.hit_bonus + self_bonus - opponent_bonus,
-            advantage_status=self.advantage_tracker.status
-        )
+        advantage_status = AdvantageStatus.NONE
+        if self.hit_bonus.self_effects.has_disadvantage(self.stats_block, target):
+            advantage_status = AdvantageStatus.DISADVANTAGE
+        elif self.hit_bonus.self_effects.has_advantage(self.stats_block, target):
+            advantage_status = AdvantageStatus.ADVANTAGE
+        
+        # Check if the target's armor class gives advantage
+        if target.armor_class.gives_attacker_advantage(target, self.stats_block):
+            if advantage_status == AdvantageStatus.DISADVANTAGE:
+                advantage_status = AdvantageStatus.NONE
+            else:
+                advantage_status = AdvantageStatus.ADVANTAGE
+        
+        dice = Dice(dice_count=1, dice_value=20, modifier=total_hit_bonus, advantage_status=advantage_status)
         roll, roll_status = dice.roll_with_advantage()
 
         self.is_critical_hit = roll_status == "critical_hit"
-        hit = roll >= target.armor_class.compute_ac(self.stats_block)
+        hit = roll >= target.armor_class.get_value(target, self.stats_block)
 
         if verbose:
             details = {
                 "hit": hit,
                 "roll": roll,
                 "roll_status": roll_status,
-                "self_bonus": self_bonus,
-                "opponent_bonus": opponent_bonus,
-                "advantage_status": self.advantage_tracker.status,
-                "armor_class": target.armor_class.compute_ac(self.stats_block),
+                "total_hit_bonus": total_hit_bonus,
+                "advantage_status": advantage_status,
+                "armor_class": target.armor_class.get_value(target, self.stats_block),
                 "is_critical_hit": self.is_critical_hit,
-                "contextual_self_disadvantages": self.contextual_modifiers.self_disadvantages,
-                "contextual_self_advantages": self.contextual_modifiers.self_advantages
+                "self_advantages": self.hit_bonus.self_effects.advantage_conditions,
+                "self_disadvantages": self.hit_bonus.self_effects.disadvantage_conditions,
+                "target_advantages": target.armor_class.base_ac.target_effects.advantage_conditions,
+                "target_disadvantages": target.armor_class.base_ac.target_effects.disadvantage_conditions
             }
             return hit, details
 
         return hit
-
-
 
     def roll_damage(self) -> int:
         total_damage = 0
@@ -149,7 +149,7 @@ class Attack(Action):
                 dice_count=damage.dice.dice_count,
                 dice_value=damage.dice.dice_value,
                 modifier=damage.dice.modifier,
-                advantage_status=self.advantage_tracker.status
+                advantage_status=self.hit_bonus.get_advantage_status(self.stats_block)
             )
             total_damage += dice.roll(is_critical=self.is_critical_hit)
         return total_damage
@@ -226,7 +226,7 @@ class Dash(Action):
 ## conditions
 
 from pydantic import BaseModel, Field
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Dict, Any, Tuple
 import uuid
 from infinipy.dnd.core import Duration, DurationType, AbilityCheck, HEARING_DEPENDENT_ABILITIES
 from infinipy.dnd.actions import Attack
@@ -273,20 +273,25 @@ class Condition(BaseModel):
 # | **Helping**             | Lends aid to another creature, giving advantage on next ability check or attack roll.                       | `Attack`: Add ability to apply advantage; `AbilityCheck`: Add ability to apply advantage.                                   |
 
 class Blinded(Condition):
-    name: str = Field("Blinded")
+    name: str = "Blinded"
 
     def apply(self, stats_block: 'StatsBlock') -> None:
+        # Add disadvantage to all attacks
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.contextual_modifiers.add_self_disadvantage("Blinded", lambda src, tgt: True)
+                action.hit_bonus.self_effects.add_disadvantage_condition("Blinded", lambda src, tgt: True)
+        
+        # Give advantage to all attacks against this creature
+        stats_block.armor_class.base_ac.target_effects.add_advantage_condition("Blinded", lambda src, tgt: True)
 
     def remove(self, stats_block: 'StatsBlock') -> None:
+        # Remove disadvantage from all attacks
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.contextual_modifiers.self_disadvantages = [
-                    condition for condition in action.contextual_modifiers.self_disadvantages 
-                    if condition[0] != "Blinded"
-                ]
+                action.hit_bonus.self_effects.remove_effect("Blinded")
+        
+        # Remove advantage from all attacks against this creature
+        stats_block.armor_class.base_ac.target_effects.remove_effect("Blinded")
 
 
 
@@ -296,16 +301,25 @@ class Blinded(Condition):
 
 class Charmed(Condition):
     name: str = "Charmed"
+    source_entity_id: str
 
     def apply(self, stats_block: 'StatsBlock') -> None:
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.add_blocked_target(self.source_entity_id)
+                action.contextual_conditions["Charmed"] = self.charmed_attack_check
 
     def remove(self, stats_block: 'StatsBlock') -> None:
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.remove_blocked_target(self.source_entity_id)
+                action.contextual_conditions.pop("Charmed", None)
+
+    @staticmethod
+    def charmed_attack_check(context: Dict[str, Any]) -> Tuple[bool, str]:
+        target = context.get('target')
+        source = context.get('source')
+        if target and source and source.active_conditions.get("Charmed") and target.id == source.active_conditions.get("Charmed").source_entity_id:
+            return False, f"Cannot attack {target.name} due to being charmed."
+        return True, ""
 
 class Deafened(Condition):
     name: str = "Deafened"
@@ -374,6 +388,107 @@ class Incapacitated(Condition):
 
 ---
 
+## contextual
+
+from pydantic import BaseModel, Field
+from typing import Dict, Any, Callable, List, Tuple, TYPE_CHECKING
+from enum import Enum
+
+if TYPE_CHECKING:
+    from infinipy.dnd.statsblock import StatsBlock
+
+
+class AdvantageStatus(str, Enum):
+    NONE = "None"
+    ADVANTAGE = "Advantage"
+    DISADVANTAGE = "Disadvantage"
+
+class AdvantageTracker(BaseModel):
+    counter: int = 0
+
+    def add_advantage(self, stats_block: 'StatsBlock'):
+        if 'Advantage' not in stats_block.modifier_immunity:
+            self.counter += 1
+
+    def add_disadvantage(self, stats_block: 'StatsBlock'):
+        if 'Disadvantage' not in stats_block.modifier_immunity:
+            self.counter -= 1
+
+    def reset(self):
+        self.counter = 0
+
+    @property
+    def status(self) -> AdvantageStatus:
+        if self.counter > 0:
+            return AdvantageStatus.ADVANTAGE
+        elif self.counter < 0:
+            return AdvantageStatus.DISADVANTAGE
+        else:
+            return AdvantageStatus.NONE
+
+class ContextualEffects(BaseModel):
+    bonuses: List[Tuple[str, Callable[['StatsBlock', Any], int]]] = Field(default_factory=list)
+    advantage_conditions: List[Tuple[str, Callable[['StatsBlock', Any], bool]]] = Field(default_factory=list)
+    disadvantage_conditions: List[Tuple[str, Callable[['StatsBlock', Any], bool]]] = Field(default_factory=list)
+
+    def add_bonus(self, source: str, bonus: Callable[['StatsBlock', Any], int]):
+        self.bonuses.append((source, bonus))
+
+    def add_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
+        self.advantage_conditions.append((source, condition))
+
+    def add_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
+        self.disadvantage_conditions.append((source, condition))
+
+    def compute_bonus(self, stats_block: 'StatsBlock', context: Any) -> int:
+        return sum(bonus(stats_block, context) for _, bonus in self.bonuses)
+
+    def has_advantage(self, stats_block: 'StatsBlock', context: Any) -> bool:
+        return any(condition(stats_block, context) for _, condition in self.advantage_conditions)
+
+    def has_disadvantage(self, stats_block: 'StatsBlock', context: Any) -> bool:
+        return any(condition(stats_block, context) for _, condition in self.disadvantage_conditions)
+
+    def apply_advantage_disadvantage(self, stats_block: 'StatsBlock', context: Any, tracker: AdvantageTracker):
+        if self.has_advantage(stats_block, context):
+            tracker.add_advantage(stats_block)
+        if self.has_disadvantage(stats_block, context):
+            tracker.add_disadvantage(stats_block)
+
+    def remove_effect(self, source: str):
+        self.bonuses = [b for b in self.bonuses if b[0] != source]
+        self.advantage_conditions = [a for a in self.advantage_conditions if a[0] != source]
+        self.disadvantage_conditions = [d for d in self.disadvantage_conditions if d[0] != source]
+
+class ModifiableValue(BaseModel):
+    base_value: int
+    static_modifiers: Dict[str, int] = Field(default_factory=dict)
+    self_effects: ContextualEffects = Field(default_factory=ContextualEffects)
+    target_effects: ContextualEffects = Field(default_factory=ContextualEffects)
+    advantage_tracker: AdvantageTracker = Field(default_factory=AdvantageTracker)
+
+    def get_value(self, stats_block: 'StatsBlock', target: Any = None) -> int:
+        total = self.base_value + sum(self.static_modifiers.values())
+        total += self.self_effects.compute_bonus(stats_block, target)
+        if target:
+            total += self.target_effects.compute_bonus(target, stats_block)
+        return max(0, total)
+
+    def add_static_modifier(self, source: str, value: int):
+        self.static_modifiers[source] = value
+
+    def remove_static_modifier(self, source: str):
+        self.static_modifiers.pop(source, None)
+
+    def get_advantage_status(self, stats_block: 'StatsBlock', target: Any = None) -> AdvantageStatus:
+        self.advantage_tracker.reset()
+        self.self_effects.apply_advantage_disadvantage(stats_block, target, self.advantage_tracker)
+        if target:
+            self.target_effects.apply_advantage_disadvantage(target, stats_block, self.advantage_tracker)
+        return self.advantage_tracker.status
+
+---
+
 ## core
 
 from __future__ import annotations
@@ -387,6 +502,7 @@ from typing import List, Union
 from infinipy.dnd.docstrings import *
 import uuid
 import random
+from infinipy.dnd.contextual import ModifiableValue, AdvantageStatus, AdvantageTracker, ContextualEffects
 
 class Size(str, Enum):
     TINY = "Tiny"
@@ -509,10 +625,7 @@ class RechargeType(str, Enum):
     LONG_REST = "Long Rest"
     ROUND = "Round"
 
-class AdvantageStatus(str, Enum):
-    NONE = "None"
-    ADVANTAGE = "Advantage"
-    DISADVANTAGE = "Disadvantage"
+
 
 class StatusEffect(str, Enum):
     DISADVANTAGE_ON_ATTACK_ROLLS = "Disadvantage on Attack Rolls"
@@ -531,54 +644,72 @@ class DurationType(str, Enum):
 
 HEARING_DEPENDENT_ABILITIES = {Skills.PERCEPTION, Skills.PERFORMANCE, Skills.INSIGHT}
 
-class AdvantageTracker(BaseModel):
-    counter: int = 0
+class RangeType(str, Enum):
+    REACH = "Reach"
+    RANGE = "Range"
 
-    def add_advantage(self, stats_block: 'StatsBlock'):
-        if 'Advantage' not in stats_block.modifier_immunity:
-            self.counter += 1
+class TargetType(str, Enum):
+    SELF = "Self"
+    ONE_TARGET = "One Target"
+    MULTIPLE_TARGETS = "Multiple Targets"
+    AREA = "Area"
+    ALLY = "Ally"  # Added this line
 
-    def add_disadvantage(self, stats_block: 'StatsBlock'):
-        if 'Disadvantage' not in stats_block.modifier_immunity:
-            self.counter -= 1
+class ShapeType(str, Enum):
+    SPHERE = "Sphere"
+    CUBE = "Cube"
+    CONE = "Cone"
+    LINE = "Line"
+    CYLINDER = "Cylinder"
 
-    def reset(self):
-        self.counter = 0
+class TargetRequirementType(str, Enum):
+    HOSTILE = "Hostile"
+    ALLY = "Ally"
+    ANY = "Any"
 
-    @property
-    def status(self) -> AdvantageStatus:
-        if self.counter > 0:
-            return AdvantageStatus.ADVANTAGE
-        elif self.counter < 0:
-            return AdvantageStatus.DISADVANTAGE
+class Dice(BaseModel):
+    dice_count: int
+    dice_value: int
+    modifier: int
+    advantage_status: AdvantageStatus = AdvantageStatus.NONE
+    allow_critical: bool = True
+
+    def expected_value(self):
+        base_average = self.dice_count * (self.dice_value + 1) / 2 + self.modifier
+        if self.advantage_status == AdvantageStatus.ADVANTAGE:
+            advantage_average = (self.dice_value + 1) * (2 * self.dice_value + 1) / (3 * self.dice_value)
+            return self.dice_count * advantage_average + self.modifier
+        if self.advantage_status == AdvantageStatus.DISADVANTAGE:
+            disadvantage_average = self.dice_value * (self.dice_value + 1) / (3 * self.dice_value)
+            return self.dice_count * disadvantage_average + self.modifier
+        return int(base_average)
+
+    def roll_with_advantage(self) -> Tuple[int, str]:
+        if self.advantage_status == AdvantageStatus.ADVANTAGE:
+            rolls = [self.roll_single(), self.roll_single()]
+            best_roll = max(rolls)
+        elif self.advantage_status == AdvantageStatus.DISADVANTAGE:
+            rolls = [self.roll_single(), self.roll_single()]
+            best_roll = min(rolls)
         else:
-            return AdvantageStatus.NONE
+            rolls = [self.roll_single()]
+            best_roll = rolls[0]
 
-## base models
-class Modifier(BaseModel):
-    value: int
-    source: str
-    duration: int = -1  # -1 for permanent, otherwise number of rounds
+        if self.allow_critical:
+            if best_roll - self.modifier == 20:
+                return best_roll, "critical_hit"
+            elif best_roll - self.modifier == 1:
+                return best_roll, "critical_failure"
+        return best_roll, "normal"
 
+    def roll_single(self) -> int:
+        return sum(random.randint(1, self.dice_value) for _ in range(self.dice_count)) + self.modifier
 
-class ModifiableValue(BaseModel):
-    base_value: int
-    modifiers: Dict[str, int] = Field(default_factory=dict)
+    def roll(self, is_critical: bool = False) -> int:
+        if is_critical:
+            return sum(random.randint(1, self.dice_value) for _ in range(self.dice_count * 2)) + self.modifier
+        return self.roll_single()
 
-    @property
-    def total_value(self) -> int:
-        return self.base_value + sum(self.modifiers.values())
-
-    def add_modifier(self, source: str, value: int):
-        self.modifiers[source] = value
-
-    def remove_modifier(self, source: str):
-        self.modifiers.pop(source, None)
-
-    def get_value(self) -> int:
-        return max(0, self.total_value)  # Ensure the value doesn't go below 0
-
-    # We don't need an update_modifiers method as modifiers are updated when added or removed
 
 class Speed(BaseModel):
     walk: ModifiableValue
@@ -600,9 +731,14 @@ class AbilityScore(BaseModel):
     ability: Ability
     score: ModifiableValue
 
-    @computed_field
-    def modifier(self) -> int:
-        return (self.score.total_value - 10) // 2
+    def get_score(self, stats_block: 'StatsBlock', target: Any = None) -> int:
+        return self.score.get_value(stats_block, target)
+
+    def get_modifier(self, stats_block: 'StatsBlock', target: Any = None) -> int:
+        return (self.get_score(stats_block, target) - 10) // 2
+
+    def get_advantage_status(self, stats_block: 'StatsBlock', target: Any = None) -> AdvantageStatus:
+        return self.score.get_advantage_status(stats_block, target)
 
 class AbilityScores(BaseModel):
     strength: AbilityScore = Field(AbilityScore(ability=Ability.STR, score=ModifiableValue(base_value=10)), description=strength_docstring)
@@ -612,13 +748,11 @@ class AbilityScores(BaseModel):
     wisdom: AbilityScore = Field(AbilityScore(ability=Ability.WIS, score=ModifiableValue(base_value=10)), description=wisdom_docstring)
     charisma: AbilityScore = Field(AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=10)), description=charisma_docstring)
 
-    @computed_field
-    def saving_throws(self) -> List['SavingThrow']:
-        return [SavingThrow(ability=ability, bonus=getattr(self, ability.value.lower()).modifier)
+    def get_saving_throws(self, stats_block: 'StatsBlock') -> List['SavingThrow']:
+        return [SavingThrow(ability=ability, bonus=getattr(self, ability.value.lower()).get_modifier(stats_block))
                 for ability in Ability]
 
-    @computed_field
-    def skill_bonuses(self) -> List['SkillBonus']:
+    def get_skill_bonuses(self, stats_block: 'StatsBlock') -> List['SkillBonus']:
         skill_ability_map = {
             Skills.ATHLETICS: Ability.STR,
             Skills.ACROBATICS: Ability.DEX,
@@ -639,29 +773,54 @@ class AbilityScores(BaseModel):
             Skills.PERFORMANCE: Ability.CHA,
             Skills.PERSUASION: Ability.CHA,
         }
-        return [SkillBonus(skill=skill, bonus=getattr(self, skill_ability_map[skill].value.lower()).modifier)
+        return [SkillBonus(skill=skill, bonus=getattr(self, skill_ability_map[skill].value.lower()).get_modifier(stats_block))
                 for skill in Skills]
 
 class AbilityCheck(BaseModel):
     ability: Skills
     difficulty_class: int
-    advantage_tracker: AdvantageTracker = Field(default_factory=AdvantageTracker)
+    contextual_effects: ContextualEffects = Field(default_factory=ContextualEffects)
     automatic_fails: Set[Skills] = Field(default_factory=set)
 
-    def perform_check(self, stats_block: 'StatsBlock') -> bool:
+    def perform_check(self, stats_block: 'StatsBlock', target: Any = None) -> bool:
         if self.ability in self.automatic_fails:
             return False
 
-        ability_modifier = getattr(stats_block.ability_scores, self.ability.value.lower()).modifier
-        dice = Dice(dice_count=1, dice_value=20, modifier=ability_modifier, advantage_status=self.advantage_tracker.status)
+        ability = next(ab for ab in Ability if ab.value.upper() == self.ability.value.split('_')[0])
+        ability_score = getattr(stats_block.ability_scores, ability.value.lower())
+        
+        modifier = ability_score.get_modifier(stats_block, target)
+        bonus = self.contextual_effects.compute_bonus(stats_block, target)
+        total_modifier = modifier + bonus
+
+        advantage_status = self.get_advantage_status(stats_block, target)
+        
+        dice = Dice(dice_count=1, dice_value=20, modifier=total_modifier, advantage_status=advantage_status)
         roll, _ = dice.roll_with_advantage()
         return roll >= self.difficulty_class
 
-    def set_disadvantage(self):
-        self.advantage_tracker.add_disadvantage(None)
+    def get_advantage_status(self, stats_block: 'StatsBlock', target: Any = None) -> AdvantageStatus:
+        advantages = sum(1 for _, cond in self.contextual_effects.advantage_conditions if cond(stats_block, target))
+        disadvantages = sum(1 for _, cond in self.contextual_effects.disadvantage_conditions if cond(stats_block, target))
+        
+        if advantages > disadvantages:
+            return AdvantageStatus.ADVANTAGE
+        elif disadvantages > advantages:
+            return AdvantageStatus.DISADVANTAGE
+        else:
+            return AdvantageStatus.NONE
 
-    def set_advantage(self):
-        self.advantage_tracker.add_advantage(None)
+    def add_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
+        self.contextual_effects.add_advantage_condition(source, condition)
+
+    def add_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
+        self.contextual_effects.add_disadvantage_condition(source, condition)
+
+    def add_bonus(self, source: str, bonus: Callable[['StatsBlock', Any], int]):
+        self.contextual_effects.add_bonus(source, bonus)
+
+    def remove_effect(self, source: str):
+        self.contextual_effects.remove_effect(source)
 
 
 class SavingThrow(BaseModel):
@@ -714,28 +873,6 @@ class Duration(BaseModel):
         )
 
 
-class RangeType(str, Enum):
-    REACH = "Reach"
-    RANGE = "Range"
-
-class TargetType(str, Enum):
-    SELF = "Self"
-    ONE_TARGET = "One Target"
-    MULTIPLE_TARGETS = "Multiple Targets"
-    AREA = "Area"
-    ALLY = "Ally"  # Added this line
-
-class ShapeType(str, Enum):
-    SPHERE = "Sphere"
-    CUBE = "Cube"
-    CONE = "Cone"
-    LINE = "Line"
-    CYLINDER = "Cylinder"
-
-class TargetRequirementType(str, Enum):
-    HOSTILE = "Hostile"
-    ALLY = "Ally"
-    ANY = "Any"
 
 class Range(BaseModel):
     type: RangeType
@@ -770,48 +907,7 @@ class Targeting(BaseModel):
         return target_str
 
 
-class Dice(BaseModel):
-    dice_count: int
-    dice_value: int
-    modifier: int
-    advantage_status: AdvantageStatus = AdvantageStatus.NONE
-    allow_critical: bool = True
 
-    def expected_value(self):
-        base_average = self.dice_count * (self.dice_value + 1) / 2 + self.modifier
-        if self.advantage_status == AdvantageStatus.ADVANTAGE:
-            advantage_average = (self.dice_value + 1) * (2 * self.dice_value + 1) / (3 * self.dice_value)
-            return self.dice_count * advantage_average + self.modifier
-        if self.advantage_status == AdvantageStatus.DISADVANTAGE:
-            disadvantage_average = self.dice_value * (self.dice_value + 1) / (3 * self.dice_value)
-            return self.dice_count * disadvantage_average + self.modifier
-        return int(base_average)
-
-    def roll_with_advantage(self) -> Tuple[int, str]:
-        if self.advantage_status == AdvantageStatus.ADVANTAGE:
-            rolls = [self.roll_single(), self.roll_single()]
-            best_roll = max(rolls)
-        elif self.advantage_status == AdvantageStatus.DISADVANTAGE:
-            rolls = [self.roll_single(), self.roll_single()]
-            best_roll = min(rolls)
-        else:
-            rolls = [self.roll_single()]
-            best_roll = rolls[0]
-
-        if self.allow_critical:
-            if best_roll - self.modifier == 20:
-                return best_roll, "critical_hit"
-            elif best_roll - self.modifier == 1:
-                return best_roll, "critical_failure"
-        return best_roll, "normal"
-
-    def roll_single(self) -> int:
-        return sum(random.randint(1, self.dice_value) for _ in range(self.dice_count)) + self.modifier
-
-    def roll(self, is_critical: bool = False) -> int:
-        if is_critical:
-            return sum(random.randint(1, self.dice_value) for _ in range(self.dice_count * 2)) + self.modifier
-        return self.roll_single()
 
 
 
@@ -825,71 +921,6 @@ class Damage(BaseModel):
 
 
 
-
-
-class DirectionalContextualModifier(BaseModel):
-    self_bonuses: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], int]]] = Field(default_factory=list)
-    opponent_bonuses: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], int]]] = Field(default_factory=list)
-    self_advantages: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], bool]]] = Field(default_factory=list)
-    opponent_advantages: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], bool]]] = Field(default_factory=list)
-    self_disadvantages: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], bool]]] = Field(default_factory=list)
-    opponent_disadvantages: List[Tuple[str, Callable[['StatsBlock', 'StatsBlock'], bool]]] = Field(default_factory=list)
-
-    def add_self_bonus(self, attribute: str, bonus: Callable[['StatsBlock', 'StatsBlock'], int]):
-        self.self_bonuses.append((attribute, bonus))
-
-    def add_opponent_bonus(self, attribute: str, bonus: Callable[['StatsBlock', 'StatsBlock'], int]):
-        self.opponent_bonuses.append((attribute, bonus))
-
-    def add_self_advantage(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.self_advantages.append((attribute, condition))
-
-    def add_opponent_advantage(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.opponent_advantages.append((attribute, condition))
-
-    def add_self_disadvantage(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.self_disadvantages.append((attribute, condition))
-
-    def add_opponent_disadvantage(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.opponent_disadvantages.append((attribute, condition))
-
-    def compute_self_bonus(self, source: 'StatsBlock', target: 'StatsBlock') -> int:
-        total_bonus = 0
-        for attribute, bonus in self.self_bonuses:
-            total_bonus += bonus(source, target)
-        return total_bonus
-
-    def compute_opponent_bonus(self, source: 'StatsBlock', target: 'StatsBlock') -> int:
-        total_bonus = 0
-        for attribute, bonus in self.opponent_bonuses:
-            total_bonus += bonus(source, target)
-        return total_bonus
-
-    def gives_self_advantage(self, source: 'StatsBlock', target: 'StatsBlock') -> bool:
-        for attribute, condition in self.self_advantages:
-            if condition(source, target):
-                return True
-        return False
-
-    def gives_opponent_advantage(self, source: 'StatsBlock', target: 'StatsBlock') -> bool:
-        for attribute, condition in self.opponent_advantages:
-            if condition(source, target):
-                return True
-        return False
-
-    def gives_self_disadvantage(self, source: 'StatsBlock', target: 'StatsBlock') -> bool:
-        for attribute, condition in self.self_disadvantages:
-            if condition(source, target):
-                return True
-        return False
-
-    def gives_opponent_disadvantage(self, source: 'StatsBlock', target: 'StatsBlock') -> bool:
-        for attribute, condition in self.opponent_disadvantages:
-            if condition(source, target):
-                return True
-        return False
-
-
 class ActionEconomy(BaseModel):
     actions: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=1))
     bonus_actions: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=1))
@@ -901,31 +932,31 @@ class ActionEconomy(BaseModel):
 
     def reset(self):
         for attr in ['actions', 'bonus_actions', 'reactions', 'movement']:
-            getattr(self, attr).modifiers.clear()
+            getattr(self, attr).base_value = getattr(self, attr).base_value
 
     def modify_actions(self, source: str, value: int):
-        self.actions.add_modifier(source, value)
+        self.actions.add_static_modifier(source, value)
 
     def modify_bonus_actions(self, source: str, value: int):
-        self.bonus_actions.add_modifier(source, value)
+        self.bonus_actions.add_static_modifier(source, value)
 
     def modify_reactions(self, source: str, value: int):
-        self.reactions.add_modifier(source, value)
+        self.reactions.add_static_modifier(source, value)
 
     def modify_movement(self, source: str, value: int):
-        self.movement.add_modifier(source, value)
+        self.movement.add_static_modifier(source, value)
 
     def remove_actions_modifier(self, source: str):
-        self.actions.remove_modifier(source)
+        self.actions.remove_static_modifier(source)
 
     def remove_bonus_actions_modifier(self, source: str):
-        self.bonus_actions.remove_modifier(source)
+        self.bonus_actions.remove_static_modifier(source)
 
     def remove_reactions_modifier(self, source: str):
-        self.reactions.remove_modifier(source)
+        self.reactions.remove_static_modifier(source)
 
     def remove_movement_modifier(self, source: str):
-        self.movement.remove_modifier(source)
+        self.movement.remove_static_modifier(source)
 
 ---
 
@@ -1260,14 +1291,13 @@ creature_traits_docstring: str = """You can create a themed version of an existi
 from typing import List, Optional, Callable, TYPE_CHECKING
 from pydantic import BaseModel, Field
 from enum import Enum
-
-from infinipy.dnd.core import  AbilityScores,  Damage, Range,  DirectionalContextualModifier
-
+from infinipy.dnd.contextual import ModifiableValue, ContextualEffects
 
 if TYPE_CHECKING:
-    from infinipy.dnd.statsblock import AttackType
     from infinipy.dnd.statsblock import StatsBlock
-## weapons
+    from infinipy.dnd.core import AbilityScores, Damage, Range
+    from infinipy.dnd.actions import AttackType
+
 class ArmorType(str, Enum):
     LIGHT = "Light"
     MEDIUM = "Medium"
@@ -1297,73 +1327,73 @@ class WeaponProperty(str, Enum):
 
 class Weapon(BaseModel):
     name: str
-    damage: Damage
-    attack_type: "AttackType"
+    damage: 'Damage'
+    attack_type: 'AttackType'
     properties: List[WeaponProperty]
-    range: Range
+    range: 'Range'
 
 class ArmorClass(BaseModel):
-    base_ac: int
-    contextual_modifiers: DirectionalContextualModifier = Field(default_factory=DirectionalContextualModifier)
+    base_ac: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=10))
     equipped_armor: Optional[Armor] = None
     equipped_shield: Optional[Shield] = None
 
-    def compute_base_ac(self, ability_scores: AbilityScores) -> int:
-        base_ac = 10 + ability_scores.dexterity.modifier
+    def compute_base_ac(self, ability_scores: 'AbilityScores') -> int:
+        base_ac = 10 + ability_scores.dexterity.get_modifier(None)
         if self.equipped_armor:
             base_ac = self.equipped_armor.base_ac
             if self.equipped_armor.dex_bonus:
-                dex_bonus = ability_scores.dexterity.modifier
+                dex_bonus = ability_scores.dexterity.get_modifier(None)
                 if self.equipped_armor.max_dex_bonus is not None:
                     dex_bonus = min(dex_bonus, self.equipped_armor.max_dex_bonus)
                 base_ac += dex_bonus
         if self.equipped_shield:
             base_ac += self.equipped_shield.ac_bonus
-        self.base_ac = base_ac
-        return self.base_ac
+        
+        self.base_ac.base_value = base_ac
+        return self.base_ac.base_value
 
-    def compute_ac(self, attacker: Optional['StatsBlock'] = None) -> int:
-        total_ac = self.base_ac
-        if attacker:
-            total_ac += self.contextual_modifiers.compute_self_bonus(attacker, self)
-            total_ac -= self.contextual_modifiers.compute_opponent_bonus(attacker, self)
-        return total_ac
+    def get_value(self, stats_block: 'StatsBlock', attacker: Optional['StatsBlock'] = None) -> int:
+        return self.base_ac.get_value(stats_block, attacker)
 
-    def give_advantage(self, attacker: 'StatsBlock') -> bool:
-        return self.contextual_modifiers.gives_opponent_advantage(attacker, self)
+    def gives_attacker_advantage(self, stats_block: 'StatsBlock', attacker: 'StatsBlock') -> bool:
+        return any(cond(attacker, stats_block) for _, cond in self.base_ac.target_effects.advantage_conditions)
 
-    def give_disadvantage(self, attacker: 'StatsBlock') -> bool:
-        return self.contextual_modifiers.gives_opponent_disadvantage(attacker, self)
+    def gives_attacker_disadvantage(self, stats_block: 'StatsBlock', attacker: 'StatsBlock') -> bool:
+        return any(cond(attacker, stats_block) for _, cond in self.base_ac.target_effects.disadvantage_conditions)
 
-    def add_self_bonus(self, attribute: str, bonus: Callable[['StatsBlock', 'StatsBlock'], int]):
-        self.contextual_modifiers.add_self_bonus(attribute, bonus)
+    def add_self_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
+        self.base_ac.self_effects.add_bonus(source, bonus)
 
-    def add_opponent_bonus(self, attribute: str, bonus: Callable[['StatsBlock', 'StatsBlock'], int]):
-        self.contextual_modifiers.add_opponent_bonus(attribute, bonus)
+    def add_opponent_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
+        self.base_ac.target_effects.add_bonus(source, bonus)
 
-    def add_self_advantage_condition(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.contextual_modifiers.add_self_advantage(attribute, condition)
+    def add_self_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+        self.base_ac.self_effects.add_advantage_condition(source, condition)
 
-    def add_opponent_advantage_condition(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.contextual_modifiers.add_opponent_advantage(attribute, condition)
+    def add_opponent_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+        self.base_ac.target_effects.add_advantage_condition(source, condition)
 
-    def add_self_disadvantage_condition(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.contextual_modifiers.add_self_disadvantage(attribute, condition)
+    def add_self_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+        self.base_ac.self_effects.add_disadvantage_condition(source, condition)
 
-    def add_opponent_disadvantage_condition(self, attribute: str, condition: Callable[['StatsBlock', 'StatsBlock'], bool]):
-        self.contextual_modifiers.add_opponent_disadvantage(attribute, condition)
+    def add_opponent_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+        self.base_ac.target_effects.add_disadvantage_condition(source, condition)
 
-    def equip_armor(self, armor: Armor):
+    def equip_armor(self, armor: Armor, ability_scores: 'AbilityScores'):
         self.equipped_armor = armor
+        self.compute_base_ac(ability_scores)
 
-    def unequip_armor(self):
+    def unequip_armor(self, ability_scores: 'AbilityScores'):
         self.equipped_armor = None
+        self.compute_base_ac(ability_scores)
 
-    def equip_shield(self, shield: Shield):
+    def equip_shield(self, shield: Shield, ability_scores: 'AbilityScores'):
         self.equipped_shield = shield
+        self.compute_base_ac(ability_scores)
 
-    def unequip_shield(self):
+    def unequip_shield(self, ability_scores: 'AbilityScores'):
         self.equipped_shield = None
+        self.compute_base_ac(ability_scores)
 
 ---
 
@@ -1380,6 +1410,7 @@ from infinipy.dnd.equipment import Armor, ArmorType, Shield, Weapon, WeaponPrope
 from infinipy.dnd.actions import Action, ActionCost, ActionType, Targeting, TargetType, AttackType, Attack
 from infinipy.dnd.core import Ability, AbilityScores, AbilityScore, ModifiableValue, Dice, \
  Damage, DamageType, Range, RangeType, Size, MonsterType, Alignment, Speed, Skills, Sense, SensesType, Language, ActionEconomy, SkillBonus
+from infinipy.dnd.contextual import ContextualEffects
 
 class GoblinNimbleEscape(Action):
     def __init__(self, **data):
@@ -1407,7 +1438,7 @@ def create_goblin() -> StatsBlock:
             charisma=AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=8))
         ),
         speed=Speed(walk=ModifiableValue(base_value=30)),
-        armor_class=ArmorClass(base_ac=15),  # Will be recalculated after equipping armor and shield
+        armor_class=ArmorClass(base_ac=ModifiableValue(base_value=15)),
         challenge=0.25,
         experience_points=50,
         skills=[SkillBonus(skill=Skills.STEALTH, bonus=6)],
@@ -1417,6 +1448,8 @@ def create_goblin() -> StatsBlock:
         hit_dice=Dice(dice_count=2, dice_value=6, modifier=0),
         action_economy=ActionEconomy(speed=30)
     )
+
+    # ... rest of the function remains the same
 
     # Equip armor and shield
     leather_armor = Armor(name="Leather Armor", type=ArmorType.LIGHT, base_ac=11, dex_bonus=True)
@@ -1457,9 +1490,9 @@ def print_goblin_details(goblin: StatsBlock):
     print("Ability Scores:")
     for ability in Ability:
         score = getattr(goblin.ability_scores, ability.value.lower())
-        print(f"  {ability.value}: {score.score.total_value} (Modifier: {score.modifier})")
-    print(f"Speed: Walk {goblin.speed.walk.get_value()} ft")
-    print(f"Armor Class: {goblin.armor_class.compute_ac()}")
+        print(f"  {ability.value}: {score.score.get_value(goblin)} (Modifier: {score.get_modifier(goblin)})")
+    print(f"Speed: Walk {goblin.speed.walk.get_value(goblin)} ft")
+    print(f"Armor Class: {goblin.armor_class.get_value(goblin)}")
     print(f"Hit Points: {goblin.current_hit_points}/{goblin.max_hit_points}")
     print(f"Proficiency Bonus: +{goblin.proficiency_bonus}")
     print("Skills:")
@@ -1517,17 +1550,16 @@ def create_skeleton() -> StatsBlock:
             charisma=AbilityScore(ability=Ability.CHA, score=ModifiableValue(base_value=5))
         ),
         speed=Speed(walk=ModifiableValue(base_value=30)),
-        armor_class=ArmorClass(base_ac=13),  # Will be recalculated after equipping armor
+        armor_class=ArmorClass(base_ac=ModifiableValue(base_value=13)),  # Will be recalculated after equipping armor
         vulnerabilities=[DamageType.BLUDGEONING],
         immunities=[DamageType.POISON],
         senses=[Sense(type=SensesType.DARKVISION, range=60)],
-        languages=["Common"],
+        languages=[Language.COMMON],
         challenge=0.25,
         experience_points=50,
         special_traits=[
             "Undead Nature: The skeleton doesn't require air, food, drink, or sleep."
         ],
-        # current_hit_points=10,
         hit_dice=Dice(dice_count=2, dice_value=8, modifier=0),
         action_economy=ActionEconomy(speed=30)
     )
@@ -1574,7 +1606,8 @@ class UndeadFortitude(Action):
     def execute(self, damage: int, damage_type: DamageType, is_critical: bool) -> bool:
         if self.stats_block.current_hit_points == 0 and damage_type != DamageType.RADIANT and not is_critical:
             dc = 5 + damage
-            con_save = self.stats_block.ability_scores.constitution.modifier + random.randint(1, 20)
+            con_modifier = self.stats_block.ability_scores.constitution.get_modifier(self.stats_block)
+            con_save = con_modifier + random.randint(1, 20)
             if con_save >= dc:
                 self.stats_block.current_hit_points = 1
                 return True
@@ -1589,9 +1622,9 @@ def print_skeleton_details(skeleton: StatsBlock):
     print("Ability Scores:")
     for ability in Ability:
         score = getattr(skeleton.ability_scores, ability.value.lower())
-        print(f"  {ability.value}: {score.score.total_value} (Modifier: {score.modifier})")
-    print(f"Speed: Walk {skeleton.speed.walk.get_value()} ft")
-    print(f"Armor Class: {skeleton.armor_class.compute_ac()}")
+        print(f"  {ability.value}: {score.score.get_value(skeleton)} (Modifier: {score.get_modifier(skeleton)})")
+    print(f"Speed: Walk {skeleton.speed.walk.get_value(skeleton)} ft")
+    print(f"Armor Class: {skeleton.armor_class.get_value(skeleton)}")
     print(f"Hit Points: {skeleton.current_hit_points}/{skeleton.max_hit_points}")
     print(f"Proficiency Bonus: +{skeleton.proficiency_bonus}")
     print("Damage Vulnerabilities: " + ", ".join([v.value for v in skeleton.vulnerabilities]))
@@ -1628,14 +1661,12 @@ from typing import List, Dict, Optional, Set, Tuple
 from pydantic import BaseModel, Field, computed_field
 from infinipy.dnd.docstrings import *
 import uuid
+from infinipy.dnd.contextual import ModifiableValue, ContextualEffects
 from infinipy.dnd.core import Ability, Size, MonsterType, Alignment, AbilityScores, Speed, SavingThrow, SkillBonus, DamageType, \
-    Sense, Language, Dice, ModifiableValue, Skills, Targeting, ActionEconomy, ActionCost, ActionType, TargetRequirementType, TargetType \
-    
+    Sense, Language, Dice, Skills, Targeting, ActionEconomy, ActionCost, ActionType, TargetRequirementType, TargetType
 from infinipy.dnd.conditions import Condition
-from infinipy.dnd.actions import Action, Attack,Dash, Disengage, Dodge, Help, Hide, AttackType
+from infinipy.dnd.actions import Action, Attack, Dash, Disengage, Dodge, Help, Hide, AttackType
 from infinipy.dnd.equipment import Armor, Shield, Weapon, ArmorClass, WeaponProperty
-
-from infinipy.dnd.actions import Dodge, Disengage, Dash, Hide, Help, Attack
 
 class StatsBlock(BaseModel):
     name: str = Field(..., description="name of the creature")
@@ -1661,10 +1692,10 @@ class StatsBlock(BaseModel):
     legendary_actions: List[Action] = Field(default_factory=list, description=legendary_actions_docstring)
     lair_actions: List[Action] = Field(default_factory=list, description=legendary_lair_docstring)
     regional_effects: List[str] = Field(default_factory=list, description=legendary_lair_docstring)
-    armor_class: ArmorClass = Field(default_factory=lambda: ArmorClass(base_ac=10))
+    armor_class: ArmorClass = Field(default_factory=lambda: ArmorClass(base_ac=ModifiableValue(base_value=10)))
     weapons: List[Weapon] = Field(default_factory=list)
     hit_dice: Dice
-    hit_point_bonus: int = Field(0, description="Bonus to max hit points from various sources")
+    hit_point_bonus: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
     current_hit_points: int = Field(0)
     computed_passive_perception: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
     action_economy: ActionEconomy = Field(default_factory=lambda: ActionEconomy(speed=30))
@@ -1699,8 +1730,8 @@ class StatsBlock(BaseModel):
                 expired_conditions.append(key)
         
         for key in expired_conditions:
-            print(f"Condition {key[0]} with ID {key[1]} expired on {self.name}")
-            self.remove_condition(*key)
+            print(f"Condition {key}  expired on {self.name}")
+            self.remove_condition(key)
 
     def apply_active_conditions(self):
         for condition in self.active_conditions.values():
@@ -1709,47 +1740,42 @@ class StatsBlock(BaseModel):
     def _recompute_fields(self):
         self.armor_class.compute_base_ac(self.ability_scores)
         self._compute_passive_perception()
-        self.action_economy.movement.base_value = self.speed.walk.get_value()
+        self.action_economy.movement.base_value = self.speed.walk.get_value(self)
         self.action_economy.reset()
         for action in self.actions:
             if isinstance(action, Attack):
-                action.advantage_tracker.reset()
+                action.update_hit_bonus()
         self.apply_active_conditions()
 
     @computed_field
     def max_hit_points(self) -> int:
-        con_modifier = self.ability_scores.constitution.modifier
+        con_modifier = self.ability_scores.constitution.get_modifier(self)
         average_hp = (self.hit_dice.expected_value()) + \
                      (con_modifier * self.hit_dice.dice_count) + \
-                     self.hit_point_bonus
+                     self.hit_point_bonus.get_value(self)
         return max(1, int(average_hp))
 
     def apply_condition(self, condition: Condition):
         if condition.name in self.modifier_immunity:
             return
-        key = (condition.name, condition.id)
+        key = condition.name
         if key not in self.active_conditions:
             print(f"Applying condition {condition.name} with ID {condition.id} to {self.name}")
             self.active_conditions[key] = condition
             # condition.apply(self)
-            self._recompute_fields()  # Recompute fields only if a new condition is applied
+            self._recompute_fields()
 
-    def remove_condition(self, condition_name: str, condition_id: str):
-        key = (condition_name, condition_id)
+    def remove_condition(self, condition_name: str):
+        key = condition_name
         if key in self.active_conditions:
-            print(f"Removing condition {condition_name} with ID {condition_id} from {self.name}")
+            print(f"Removing condition {condition_name}  from {self.name}")
             condition = self.active_conditions.pop(key)
             condition.remove(self)
-            self._recompute_fields()  # Recompute fields after condition is removed
+            self._recompute_fields()
 
     def get_conditions_by_name(self, name: str) -> List[Condition]:
-        return [cond for key, cond in self.active_conditions.items() if key[0] == name]
+        return [cond for key, cond in self.active_conditions.items() if key == name]
 
-    def get_condition_by_id(self, condition_id: str) -> Optional[Condition]:
-        for key, cond in self.active_conditions.items():
-            if key[1] == condition_id:
-                return cond
-        return None
 
     @computed_field
     def proficiency_bonus(self) -> int:
@@ -1757,19 +1783,19 @@ class StatsBlock(BaseModel):
 
     @computed_field
     def armor_class_value(self) -> int:
-        return self.armor_class.base_ac
+        return self.armor_class.get_value(self)
 
     @computed_field
     def initiative(self) -> int:
-        return self.ability_scores.dexterity.modifier
+        return self.ability_scores.dexterity.get_modifier(self)
 
     @computed_field
     def passive_perception(self) -> int:
-        return self.computed_passive_perception.total_value
+        return self.computed_passive_perception.get_value(self)
 
     def _compute_passive_perception(self):
         perception_bonus = next((skill.bonus for skill in self.skills if skill.skill == Skills.PERCEPTION), 0)
-        self.computed_passive_perception.base_value = 10 + self.ability_scores.wisdom.modifier + perception_bonus
+        self.computed_passive_perception.base_value = 10 + self.ability_scores.wisdom.get_modifier(self) + perception_bonus
 
     def add_action(self, action: Action):
         action.stats_block = self
@@ -1788,19 +1814,19 @@ class StatsBlock(BaseModel):
         self.lair_actions.append(lair_action)
 
     def equip_armor(self, armor: Armor):
-        self.armor_class.equip_armor(armor)
+        self.armor_class.equip_armor(armor, self.ability_scores)
         self._recompute_fields()
 
     def unequip_armor(self):
-        self.armor_class.unequip_armor()
+        self.armor_class.unequip_armor(self.ability_scores)
         self._recompute_fields()
 
     def equip_shield(self, shield: Shield):
-        self.armor_class.equip_shield(shield)
+        self.armor_class.equip_shield(shield, self.ability_scores)
         self._recompute_fields()
 
     def unequip_shield(self):
-        self.armor_class.unequip_shield()
+        self.armor_class.unequip_shield(self.ability_scores)
         self._recompute_fields()
 
     def add_weapon(self, weapon: Weapon):
@@ -1841,10 +1867,6 @@ class StatsBlock(BaseModel):
     def update_ability_scores(self, new_ability_scores: AbilityScores):
         self.ability_scores = new_ability_scores
         self._recompute_fields()
-        for action in self.actions + self.reactions + self.legendary_actions + self.lair_actions:
-            if isinstance(action, Attack):
-                action.hit_bonus = action.hit_bonus
-                action.average_damage = action.average_damage
 
     def safe_update(self, **kwargs):
         updatable_fields = set(self.model_fields.keys()) - set(self.__computed_fields__)
@@ -1863,21 +1885,22 @@ class StatsBlock(BaseModel):
         self.current_hit_points = min(self.max_hit_points, self.current_hit_points + healing)
 
     def add_hit_point_bonus(self, bonus: int):
-        self.hit_point_bonus += bonus
+        self.hit_point_bonus.add_static_modifier("bonus", bonus)
         self._recompute_fields()
 
     def remove_hit_point_bonus(self, bonus: int):
-        self.hit_point_bonus -= bonus
+        self.hit_point_bonus.remove_static_modifier("bonus")
         self._recompute_fields()
 
-#fully initalize the models that were using the StatsBlock class as a forward reference
+ModifiableValue.model_rebuild()
 Dodge.model_rebuild()
 Disengage.model_rebuild()
 Dash.model_rebuild()
 Hide.model_rebuild()
 Help.model_rebuild()
 Attack.model_rebuild()
-
+# ArmorClass.model_rebuild()
+# Weapon.model_rebuild()
 
 ---
 
@@ -1888,28 +1911,28 @@ from infinipy.dnd.monsters.goblin import create_goblin
 from infinipy.dnd.monsters.skeleton import create_skeleton
 from infinipy.dnd.conditions import Blinded, Duration, DurationType
 
-def print_goblin_details(goblin):
-    print(f"Goblin Details:\nName: {goblin.name}\nSpeed: {goblin.speed.walk.get_value()} ft\nArmor Class: {goblin.armor_class.compute_base_ac(goblin.ability_scores)}")
-    print(f"Hit Points: {goblin.current_hit_points}/{goblin.max_hit_points}\nProficiency Bonus: +{goblin.proficiency_bonus}")
-
-def print_skeleton_details(skeleton):
-    print(f"Skeleton Details:\nName: {skeleton.name}\nSpeed: {skeleton.speed.walk.get_value()} ft\nArmor Class: {skeleton.armor_class.compute_base_ac(skeleton.ability_scores)}")
-    print(f"Hit Points: {skeleton.current_hit_points}/{skeleton.max_hit_points}\nProficiency Bonus: +{skeleton.proficiency_bonus}")
+def print_creature_details(creature):
+    print(f"{creature.name} Details:")
+    print(f"Speed: {creature.speed.walk.get_value(creature)} ft")
+    print(f"Armor Class: {creature.armor_class.get_value(creature)}")
+    print(f"Hit Points: {creature.current_hit_points}/{creature.max_hit_points}")
+    print(f"Proficiency Bonus: +{creature.proficiency_bonus}")
+    print(f"Active Conditions: {', '.join([cond[0] for cond in creature.active_conditions.keys()])}")
 
 def test_blinded_condition():
     goblin = create_goblin()
     skeleton = create_skeleton()
     
     print("\n--- Initial State ---")
-    print_goblin_details(goblin)
-    print("\nSkeleton:")
-    print_skeleton_details(skeleton)
+    print_creature_details(goblin)
+    print("\n")
+    print_creature_details(skeleton)
     
     print("\n--- Goblin attacks Skeleton (no conditions) ---")
     attack_action = next(action for action in goblin.actions if isinstance(action, Attack))
     hit, details = attack_action.roll_to_hit(skeleton, verbose=True)
     print(f"Advantage status: {details['advantage_status']}")
-    print(f"Attack roll: {details['roll']}, Total modifiers: {details['self_bonus'] - details['opponent_bonus']}")
+    print(f"Attack roll: {details['roll']}, Total hit bonus: {details['total_hit_bonus']}")
     print(details)
     if hit:
         damage = attack_action.roll_damage()
@@ -1923,13 +1946,13 @@ def test_blinded_condition():
     goblin.apply_condition(blinded_condition)
     
     print("\n--- State After Applying Blinded Condition ---")
-    print_goblin_details(goblin)
+    print_creature_details(goblin)
     
     print("\n--- Goblin attacks Skeleton (Blinded condition) ---")
     attack_action = next(action for action in goblin.actions if isinstance(action, Attack))
     hit, details = attack_action.roll_to_hit(skeleton, verbose=True)
     print(f"Advantage status: {details['advantage_status']}")
-    print(f"Attack roll: {details['roll']}, Total modifiers: {details['self_bonus'] - details['opponent_bonus']}")
+    print(f"Attack roll: {details['roll']}, Total hit bonus: {details['total_hit_bonus']}")
     print(details)
     if hit:
         damage = attack_action.roll_damage()
@@ -1938,16 +1961,42 @@ def test_blinded_condition():
     else:
         print(f"Goblin misses the attack due to being blinded. Required AC: {details['armor_class']}, Roll: {details['roll']}")
     
+    print("\n--- Skeleton attacks Blinded Goblin ---")
+    skeleton_attack = next(action for action in skeleton.actions if isinstance(action, Attack))
+    hit, details = skeleton_attack.roll_to_hit(goblin, verbose=True)
+    print(f"Advantage status: {details['advantage_status']}")
+    print(f"Attack roll: {details['roll']}, Total hit bonus: {details['total_hit_bonus']}")
+    print(details)
+    if hit:
+        damage = skeleton_attack.roll_damage()
+        goblin.take_damage(damage)
+        print(f"Skeleton hits Goblin for {damage} damage. Goblin HP: {goblin.current_hit_points}")
+    else:
+        print(f"Skeleton misses the attack. Required AC: {details['armor_class']}, Roll: {details['roll']}")
+    
     print("\n--- Advancing Rounds ---")
     goblin.update_conditions()
     
     print("\n--- State After Advancing Rounds ---")
-    print_goblin_details(goblin)
+    print_creature_details(goblin)
     
     goblin.update_conditions()
     
     print("\n--- State After Another Round ---")
-    print_goblin_details(goblin)
+    print_creature_details(goblin)
+    
+    print("\n--- Goblin attacks Skeleton (after Blinded condition expires) ---")
+    attack_action = next(action for action in goblin.actions if isinstance(action, Attack))
+    hit, details = attack_action.roll_to_hit(skeleton, verbose=True)
+    print(f"Advantage status: {details['advantage_status']}")
+    print(f"Attack roll: {details['roll']}, Total hit bonus: {details['total_hit_bonus']}")
+    print(details)
+    if hit:
+        damage = attack_action.roll_damage()
+        skeleton.take_damage(damage)
+        print(f"Goblin hits Skeleton for {damage} damage. Skeleton HP: {skeleton.current_hit_points}")
+    else:
+        print(f"Goblin misses the attack. Required AC: {details['armor_class']}, Roll: {details['roll']}")
 
 def main():
     test_blinded_condition()
@@ -1955,6 +2004,98 @@ def main():
 if __name__ == "__main__":
     main()
 
+---
+
+## charmed
+
+from infinipy.dnd.statsblock import StatsBlock
+from infinipy.dnd.monsters.goblin import create_goblin
+from infinipy.dnd.monsters.skeleton import create_skeleton
+from infinipy.dnd.conditions import Charmed, Duration, DurationType
+from infinipy.dnd.actions import Attack
+
+def print_creature_details(creature: StatsBlock):
+    print(f"{creature.name} Details:")
+    print(f"Speed: {creature.speed.walk.get_value(creature)} ft")
+    print(f"Armor Class: {creature.armor_class.get_value(creature)}")
+    print(f"Hit Points: {creature.current_hit_points}/{creature.max_hit_points}")
+    print(f"Proficiency Bonus: +{creature.proficiency_bonus}")
+    print(f"Active Conditions: {', '.join([cond for cond in creature.active_conditions.keys()])}")
+
+def test_charmed_condition():
+    goblin = create_goblin()
+    skeleton = create_skeleton()
+    
+    print("\n--- Initial State ---")
+    print_creature_details(goblin)
+    print("\n")
+    print_creature_details(skeleton)
+    
+    print("\n--- Skeleton attacks Goblin (no conditions) ---")
+    attack_action = next(action for action in skeleton.actions if isinstance(action, Attack))
+    context = {"source": skeleton, "target": goblin}
+    can_attack, reason = attack_action.prerequisite(context)
+    if can_attack:
+        hit, details = attack_action.roll_to_hit(goblin, verbose=True)
+        print(f"Attack roll: {details['roll']}, Total hit bonus: {details['total_hit_bonus']}")
+        if hit:
+            damage = attack_action.roll_damage()
+            goblin.take_damage(damage)
+            print(f"Skeleton hits Goblin for {damage} damage. Goblin HP: {goblin.current_hit_points}")
+        else:
+            print(f"Skeleton misses the attack. Required AC: {details['armor_class']}, Roll: {details['roll']}")
+    else:
+        print(f"Skeleton cannot attack Goblin: {reason}")
+    
+    # Apply the Charmed condition to the skeleton
+    charmed_condition = Charmed(name="Charmed", duration=Duration(time=1, type=DurationType.ROUNDS), source_entity_id=goblin.id)
+    skeleton.apply_condition(charmed_condition)
+    
+    print("\n--- State After Applying Charmed Condition ---")
+    print_creature_details(skeleton)
+    
+    print("\n--- Skeleton tries to attack Goblin (Charmed condition) ---")
+    can_attack, reason = attack_action.prerequisite(context)
+    if can_attack:
+        hit, details = attack_action.roll_to_hit(goblin, verbose=True)
+        print(f"Attack roll: {details['roll']}, Total hit bonus: {details['total_hit_bonus']}")
+        if hit:
+            damage = attack_action.roll_damage()
+            goblin.take_damage(damage)
+            print(f"Skeleton hits Goblin for {damage} damage. Goblin HP: {goblin.current_hit_points}")
+        else:
+            print(f"Skeleton misses the attack. Required AC: {details['armor_class']}, Roll: {details['roll']}")
+    else:
+        print(f"Skeleton cannot attack Goblin: {reason}")
+    
+    print("\n--- Advancing Time ---")
+    skeleton.update_conditions()
+    
+    print("\n--- State After Advancing Time  this should be the last blinded turn---")
+    print_creature_details(skeleton)
+    
+    print("\n--- Advancing Time ---")
+    skeleton.update_conditions()
+    print_creature_details(skeleton)
+    print("\n--- Skeleton tries to attack Goblin (after Charmed condition expires) ---")
+    can_attack, reason = attack_action.prerequisite(context)
+    if can_attack:
+        hit, details = attack_action.roll_to_hit(goblin, verbose=True)
+        print(f"Attack roll: {details['roll']}, Total hit bonus: {details['total_hit_bonus']}")
+        if hit:
+            damage = attack_action.roll_damage()
+            goblin.take_damage(damage)
+            print(f"Skeleton hits Goblin for {damage} damage. Goblin HP: {goblin.current_hit_points}")
+        else:
+            print(f"Skeleton misses the attack. Required AC: {details['armor_class']}, Roll: {details['roll']}")
+    else:
+        print(f"Skeleton cannot attack Goblin: {reason}")
+
+def main():
+    test_charmed_condition()
+
+if __name__ == "__main__":
+    main()
 
 ---
 

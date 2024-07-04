@@ -48,19 +48,21 @@ class ContextualEffects(BaseModel):
     def add_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
         self.disadvantage_conditions.append((source, condition))
 
-    def compute_bonus(self, stats_block: 'StatsBlock', context: Any) -> int:
-        return sum(bonus(stats_block, context) for _, bonus in self.bonuses)
+    def compute_bonus(self, stats_block: 'StatsBlock', target:'StatsBlock') -> int:
+        return sum(bonus(stats_block, target) for _, bonus in self.bonuses)
 
-    def has_advantage(self, stats_block: 'StatsBlock', context: Any) -> bool:
-        return any(condition(stats_block, context) for _, condition in self.advantage_conditions)
+    def has_advantage(self, stats_block: 'StatsBlock', target:'StatsBlock') -> bool:
+        print("Advantage Conditions:")
+        [print(condition.name) for condition in self.advantage_conditions]
+        return any(condition(stats_block, target) for _, condition in self.advantage_conditions)
 
-    def has_disadvantage(self, stats_block: 'StatsBlock', context: Any) -> bool:
-        return any(condition(stats_block, context) for _, condition in self.disadvantage_conditions)
+    def has_disadvantage(self, stats_block: 'StatsBlock', target:'StatsBlock') -> bool:
+        return any(condition(stats_block, target) for _, condition in self.disadvantage_conditions)
 
-    def apply_advantage_disadvantage(self, stats_block: 'StatsBlock', context: Any, tracker: AdvantageTracker):
-        if self.has_advantage(stats_block, context):
+    def apply_advantage_disadvantage(self, stats_block: 'StatsBlock', target:'StatsBlock', tracker: AdvantageTracker):
+        if self.has_advantage(stats_block, target):
             tracker.add_advantage(stats_block)
-        if self.has_disadvantage(stats_block, context):
+        if self.has_disadvantage(stats_block, target):
             tracker.add_disadvantage(stats_block)
 
     def remove_effect(self, source: str):
@@ -88,7 +90,7 @@ class ModifiableValue(BaseModel):
     def remove_static_modifier(self, source: str):
         self.static_modifiers.pop(source, None)
 
-    def get_advantage_status(self, stats_block: 'StatsBlock', target: Any = None) -> AdvantageStatus:
+    def get_advantage_status(self, stats_block: 'StatsBlock', target: 'StatsBlock' = None) -> AdvantageStatus:
         self.advantage_tracker.reset()
         self.self_effects.apply_advantage_disadvantage(stats_block, target, self.advantage_tracker)
         if target:
