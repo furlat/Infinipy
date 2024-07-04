@@ -90,10 +90,10 @@ def test_charmed_ability_check_advantage():
     def perform_persuasion_check(description):
         print(f"\n--- Goblin uses Persuasion on Skeleton ({description}) ---")
         skill = goblin.skills.get_skill(Skills.PERSUASION)
+        print(f"Skill proficient: {skill.proficient}")
+        print(f"Skill expertise: {skill.expertise}")
         roll, total, dc = goblin.perform_skill_check(Skills.PERSUASION, 15, skeleton, return_roll=True)
-        advantage_status = skill.get_advantage_status(goblin, skeleton)
-        print(f"Roll: {roll}, Total: {total}, DC: {dc}")
-        print(f"Advantage Status: {advantage_status}")
+        # Remove the duplicate call to get_advantage_status
         print(f"Persuasion check: {'Success' if total >= dc else 'Failure'}")
 
     perform_persuasion_check("no conditions")

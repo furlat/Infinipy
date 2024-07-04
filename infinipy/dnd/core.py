@@ -291,13 +291,21 @@ class AbilityScores(BaseModel):
         ability_score = getattr(self, ability.value.lower())
         return ability_score.get_modifier(stats_block, target)
 
+ABILITY_TO_SKILLS = {
+    Ability.STR: [Skills.ATHLETICS],
+    Ability.DEX: [Skills.ACROBATICS, Skills.SLEIGHT_OF_HAND, Skills.STEALTH],
+    Ability.CON: [],
+    Ability.INT: [Skills.ARCANA, Skills.HISTORY, Skills.INVESTIGATION, Skills.NATURE, Skills.RELIGION],
+    Ability.WIS: [Skills.ANIMAL_HANDLING, Skills.INSIGHT, Skills.MEDICINE, Skills.PERCEPTION, Skills.SURVIVAL],
+    Ability.CHA: [Skills.DECEPTION, Skills.INTIMIDATION, Skills.PERFORMANCE, Skills.PERSUASION]
+}
+
 class Skill(BaseModel):
     ability: Ability
+    skill: Skills
     proficient: bool = False
     expertise: bool = False
-    self_effects: ContextualEffects = Field(default_factory=ContextualEffects)
-    target_effects: ContextualEffects = Field(default_factory=ContextualEffects)
-    advantage_tracker: AdvantageTracker = Field(default_factory=AdvantageTracker)
+    bonus: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
 
     def get_bonus(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None) -> int:
         ability_bonus = stats_block.ability_scores.get_ability_check(self.ability, stats_block, target)
@@ -306,61 +314,78 @@ class Skill(BaseModel):
             proficiency_bonus *= 2
         elif not self.proficient:
             proficiency_bonus = 0
-        contextual_bonus = self.self_effects.compute_bonus(stats_block, target)
-        if target:
-            contextual_bonus += target.skills.get_skill(self.name).target_effects.compute_bonus(target, stats_block)
-        return ability_bonus + proficiency_bonus + contextual_bonus
+        self.bonus.base_value = ability_bonus + proficiency_bonus
+        return self.bonus.get_value(stats_block, target)
 
     def get_advantage_status(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None) -> AdvantageStatus:
-        print(f"Getting advantage status for skill check for source {stats_block.name} and target {target.name}")
-        self.advantage_tracker.reset()
-        self.self_effects.apply_advantage_disadvantage(stats_block, target, self.advantage_tracker)
-        return self.advantage_tracker.status
-
-    def perform_check(self, stats_block: 'StatsBlock', dc: int, target:Optional['StatsBlock'] = None, return_roll: bool = False) -> Union[bool, Tuple[int, int]]:
+        print(f"Getting advantage status for {self.skill.value} skill check (Skill ID: {id(self)})")
+        advantage_tracker = AdvantageTracker()
         
-        print(f"Performing skill check for {self.ability.value} with DC {dc} and source {stats_block.name} and target {target.name}")
+        self.bonus.self_effects.apply_advantage_disadvantage(stats_block, target, advantage_tracker)
+        
+        if target:
+            target_skill = target.skills.get_skill(self.skill)  # Use self.skill instead of self.ability
+            target_skill.bonus.target_effects.apply_advantage_disadvantage(stats_block, target, advantage_tracker, skill=self.skill.value)
+        
+        status = advantage_tracker.status
+        print(f"Final advantage status: {status}")
+        return status
+
+    def perform_check(self, stats_block: 'StatsBlock', dc: int, target: Optional['StatsBlock'] = None, return_roll: bool = False) -> Union[bool, Tuple[int, int]]:
+        print(f"Performing {self.ability.value} skill check")
         bonus = self.get_bonus(stats_block, target)
         advantage_status = self.get_advantage_status(stats_block, target)
-        print("advantage status:", advantage_status)
+        print(f"Bonus: {bonus}, Advantage status: {advantage_status}")
         dice = Dice(dice_count=1, dice_value=20, modifier=bonus, advantage_status=advantage_status)
         roll, _ = dice.roll_with_advantage()
         total = roll + bonus
+        print(f"Roll: {roll}, Total: {total}, DC: {dc}")
         if return_roll:
             return roll, total
         return total >= dc
+    
+    def add_self_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
+        self.bonus.self_effects.add_bonus(source, bonus)
 
-    def add_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
-        self.contextual_effects.add_advantage_condition(source, condition)
+    def add_target_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
+        self.bonus.target_effects.add_bonus(source, bonus)
 
-    def add_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Any], bool]):
-        self.contextual_effects.add_disadvantage_condition(source, condition)
+    def add_self_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+        self.bonus.self_effects.add_advantage_condition(source, condition)
 
-    def add_bonus(self, source: str, bonus: Callable[['StatsBlock', Any], int]):
-        self.contextual_effects.add_bonus(source, bonus)
+    def add_target_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+        self.bonus.target_effects.add_advantage_condition(source, condition)
+
+    def add_self_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+        self.bonus.self_effects.add_disadvantage_condition(source, condition)
+
+    def add_target_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+        self.bonus.target_effects.add_disadvantage_condition(source, condition)
 
     def remove_effect(self, source: str):
-        self.contextual_effects.remove_effect(source)
+        self.bonus.self_effects.remove_effect(source)
+        self.bonus.target_effects.remove_effect(source)
 
 class SkillSet(BaseModel):
-    acrobatics: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX))
-    animal_handling: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS))
-    arcana: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT))
-    athletics: Skill = Field(default_factory=lambda: Skill(ability=Ability.STR))
-    deception: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA))
-    history: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT))
-    insight: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS))
-    intimidation: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA))
-    investigation: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT))
-    medicine: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS))
-    nature: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT))
-    perception: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS))
-    performance: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA))
-    persuasion: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA))
-    religion: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT))
-    sleight_of_hand: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX))
-    stealth: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX))
-    survival: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS))
+    acrobatics: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX, skill=Skills.ACROBATICS))
+    animal_handling: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS, skill=Skills.ANIMAL_HANDLING))
+    arcana: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT, skill=Skills.ARCANA))
+    athletics: Skill = Field(default_factory=lambda: Skill(ability=Ability.STR, skill=Skills.ATHLETICS))
+    deception: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA, skill=Skills.DECEPTION))
+    history: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT, skill=Skills.HISTORY))
+    insight: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS, skill=Skills.INSIGHT))
+    intimidation: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA, skill=Skills.INTIMIDATION))
+    investigation: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT, skill=Skills.INVESTIGATION))
+    medicine: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS, skill=Skills.MEDICINE))
+    nature: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT, skill=Skills.NATURE))
+    perception: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS, skill=Skills.PERCEPTION))
+    performance: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA, skill=Skills.PERFORMANCE))
+    persuasion: Skill = Field(default_factory=lambda: Skill(ability=Ability.CHA, skill=Skills.PERSUASION))
+    religion: Skill = Field(default_factory=lambda: Skill(ability=Ability.INT, skill=Skills.RELIGION))
+    sleight_of_hand: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX, skill=Skills.SLEIGHT_OF_HAND))
+    stealth: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX, skill=Skills.STEALTH))
+    survival: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS, skill=Skills.SURVIVAL))
+
 
     proficiencies: Set[Skills] = Field(default_factory=set)
     expertise: Set[Skills] = Field(default_factory=set)
@@ -439,18 +464,13 @@ class Duration(BaseModel):
     time: Union[int, str]
     concentration: bool = False
     type: DurationType = Field(DurationType.ROUNDS, description="The type of duration for the effect")
-    has_advanced: bool = False  # Add this to track if the duration has been advanced
+    has_advanced: bool = False
 
     def advance(self) -> bool:
-        if not self.has_advanced:
-            self.has_advanced = True
-            return False  # Prevent the duration from advancing immediately
         if self.type in [DurationType.ROUNDS, DurationType.MINUTES, DurationType.HOURS]:
             if isinstance(self.time, int):
-                print(f"Advancing duration: {self.time} remaining")
-                if self.time > 0:
-                    self.time -= 1
-                return self.time <= 0  # Return True if the time has reached 0
+                self.time -= 1
+                return self.time <= 0
         return False
 
     def is_expired(self) -> bool:
@@ -495,17 +515,12 @@ class Targeting(BaseModel):
 
 
 
-
-
-
-
 class Damage(BaseModel):
     dice: Dice
     type: DamageType
 
     def average_damage(self):
         return self.dice.expected_value()
-
 
 
 class ActionEconomy(BaseModel):

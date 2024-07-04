@@ -64,15 +64,12 @@ class StatsBlock(BaseModel):
     def is_in_line_of_sight(self, entity_id: str) -> bool:
         return entity_id in self.line_of_sight
 
-    def update_conditions(self):
-        expired_conditions = []
-        for key, condition in self.active_conditions.items():
-            if condition.duration.advance():
-                expired_conditions.append(key)
-        
-        for key in expired_conditions:
-            print(f"Condition {key}  expired on {self.name}")
-            self.remove_condition(key)
+    def remove_condition(self, condition_name: str):
+        if condition_name in self.active_conditions:
+            condition = self.active_conditions.pop(condition_name)
+            condition.remove(self)
+            print(f"Removed condition {condition_name} from {self.name}")
+        self._recompute_fields()
 
     def apply_active_conditions(self):
         for condition in self.active_conditions.values():
@@ -99,20 +96,28 @@ class StatsBlock(BaseModel):
     def apply_condition(self, condition: Condition):
         if condition.name in self.modifier_immunity:
             return
-        key = condition.name
-        if key not in self.active_conditions:
+        if condition.name not in self.active_conditions:
             print(f"Applying condition {condition.name} with ID {condition.id} to {self.name}")
-            self.active_conditions[key] = condition
+            self.active_conditions[condition.name] = condition
             # condition.apply(self)
             self._recompute_fields()
 
-    def remove_condition(self, condition_name: str):
-        key = condition_name
-        if key in self.active_conditions:
-            print(f"Removing condition {condition_name}  from {self.name}")
-            condition = self.active_conditions.pop(key)
-            condition.remove(self)
+    def update_conditions(self):
+        print(f"Updating conditions for {self.name}")
+        expired_conditions = []
+        for key, condition in self.active_conditions.items():
+            if condition.duration.advance():
+                expired_conditions.append(key)
+        
+        for key in expired_conditions:
+            print(f"Condition {key} expired on {self.name}")
+            self.remove_condition(key)
+        
+        # Only recompute fields if any conditions were removed
+        if expired_conditions:
             self._recompute_fields()
+
+    
 
     def get_conditions_by_name(self, name: str) -> List[Condition]:
         return [cond for key, cond in self.active_conditions.items() if key == name]
@@ -143,11 +148,13 @@ class StatsBlock(BaseModel):
         return self.ability_scores.get_ability_score(ability).perform_ability_check(self, dc, target)
 
     def perform_skill_check(self, skill: Skills, dc: int, context: Any = None, return_roll: bool = False) -> Union[bool, Tuple[int, int, int]]:
+        print(f"StatsBlock performing skill check for {skill.value} (StatsBlock ID: {id(self)})")
         skill_obj = self.skills.get_skill(skill)
-        roll, total = skill_obj.perform_check(self, dc, context, return_roll=True)
+        result = skill_obj.perform_check(self, dc, context, return_roll=return_roll)
         if return_roll:
+            roll, total = result
             return roll, total, dc
-        return total >= dc
+        return result
 
     def perform_saving_throw(self, ability: Ability, dc: int, target: Any = None) -> bool:
         return self.saving_throws[ability].perform_save(self, dc, target)

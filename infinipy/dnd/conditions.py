@@ -45,6 +45,24 @@ class Condition(BaseModel):
 # | **Hiding**              | Makes Dexterity (Stealth) checks to hide.                                                                   | `AbilityCheck`: Add logic for hiding mechanic.                                                                              |
 # | **Helping**             | Lends aid to another creature, giving advantage on next ability check or attack roll.                       | `Attack`: Add ability to apply advantage; `AbilityCheck`: Add ability to apply advantage.                                   |
 
+# difficult - will require more core functionality to be implemented first:
+# Deafened requires a "tag" system for ability checks to be implemented, this could be arbitrary strings that can be added to ability checks to indicate that they are hearing-dependent or any other qualitative descriptor.
+# Frightened requires a "line of sight" system to be implemented, we could to for now with considering the LOS and PATHs variables as data which get fed into the statsblock from an external system
+# Invisible requires los
+# Petrified also interact with a sensory system 
+# Prone requires a distance system for the advantage check
+# Stunned requires thinking about the "speak action"
+# Unconscious is a wrapper and requires dropping weapons (where?) 
+# Hidden requires a "stealth" system to be implemented which requires sensory system
+#Doable:
+# Paralyzed induces the Incapacted effect so we need to reason a bit about this nested dependecies
+# Restrained we finally have some saving throws to interact with
+# Incapacitated
+# Poisoned
+# Doding
+# Dashing
+# Helping/Helped
+
 class Blinded(Condition):
     name: str = "Blinded"
 
@@ -67,31 +85,34 @@ class Blinded(Condition):
         stats_block.armor_class.base_ac.target_effects.remove_effect("Blinded")
 
 
-
-
-
-
-
 class Charmed(Condition):
     name: str = "Charmed"
     source_entity_id: str
 
     def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Charmed condition to {stats_block.name}")
         # Prevent attacking the charmer
         for action in stats_block.actions:
             if isinstance(action, Attack):
                 action.contextual_conditions["Charmed"] = self.charmed_attack_check
 
-        # Give advantage on social checks to the charmer
         social_skills = [Skills.DECEPTION, Skills.INTIMIDATION, Skills.PERFORMANCE, Skills.PERSUASION]
         for skill in social_skills:
-            print(f"appling charmed to {skill}")
             skill_obj = stats_block.skills.get_skill(skill)
-            skill_obj.contextual_effects.add_advantage_condition("Charmed", self.charmed_social_check)
+            print(f"Adding Charmed advantage condition to {skill.value} for {stats_block.name}")
+            skill_obj.bonus.target_effects.add_advantage_condition("Charmed", self.charmed_social_check)
 
-        # self.duration.has_advanced = True  # Mark the first round as advanced
-
+    @staticmethod
+    def charmed_social_check(source: 'StatsBlock', target: 'StatsBlock') -> bool:
+        print(f"Checking Charmed social condition: source={source.name}, target={target.name}")
+        if "Charmed" in target.active_conditions and target.active_conditions["Charmed"].source_entity_id == source.id:
+            print("Charmed condition applies")
+            return True
+        print("Charmed condition does not apply")
+        return False
+    
     def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Charmed condition from {stats_block.name}")
         # Remove attack restriction
         for action in stats_block.actions:
             if isinstance(action, Attack):
@@ -100,25 +121,16 @@ class Charmed(Condition):
         # Remove social check advantage
         social_skills = [Skills.DECEPTION, Skills.INTIMIDATION, Skills.PERFORMANCE, Skills.PERSUASION]
         for skill in social_skills:
-            stats_block.skills.get_skill(skill).contextual_effects.remove_effect("Charmed")
+            skill_obj = stats_block.skills.get_skill(skill)
+            skill_obj.bonus.target_effects.remove_effect("Charmed")
 
     @staticmethod
-    def charmed_attack_check(stats_block: 'StatsBlock', target:'StatsBlock') -> Tuple[bool, str]:
+    def charmed_attack_check(source: 'StatsBlock', target:'StatsBlock') -> Tuple[bool, str]:
         print("TRIGGERED ATTACK CHECKKKK")
-        source = stats_block
         if target and source and "Charmed" in source.active_conditions and target.id == source.active_conditions["Charmed"].source_entity_id:
             return False, f"Cannot attack {target.name} due to being charmed."
         return True, ""
 
-    @staticmethod
-    def charmed_social_check(stats_block: 'StatsBlock', target:'StatsBlock') -> bool:
-        print("GAGAGAGANG Checking for Charmed advantage on social checks")
-        source = stats_block
-        print(f"Source: {source}, Target: {target}")
-        if target and isinstance(target, StatsBlock):
-            if "Charmed" in target.active_conditions and target.active_conditions["Charmed"].source_entity_id == source.id:
-                return True
-        return False
 
 # class Deafened(Condition):
 #     name: str = "Deafened"

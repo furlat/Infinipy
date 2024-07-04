@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Dict, Any, Callable, List, Tuple, TYPE_CHECKING
+from typing import Dict, Any, Callable, List, Tuple, TYPE_CHECKING, Optional
 from enum import Enum
 
 if TYPE_CHECKING:
@@ -59,13 +59,32 @@ class ContextualEffects(BaseModel):
     def has_disadvantage(self, stats_block: 'StatsBlock', target:'StatsBlock') -> bool:
         return any(condition(stats_block, target) for _, condition in self.disadvantage_conditions)
 
-    def apply_advantage_disadvantage(self, stats_block: 'StatsBlock', target:'StatsBlock', tracker: AdvantageTracker):
-        if self.has_advantage(stats_block, target):
-            tracker.add_advantage(stats_block)
-        if self.has_disadvantage(stats_block, target):
-            tracker.add_disadvantage(stats_block)
+    def apply_advantage_disadvantage(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'], tracker: AdvantageTracker, skill: Optional[str] = None):
+        print(f"Applying advantage/disadvantage for {stats_block.name}")
+        for source, condition in self.advantage_conditions:
+            print(f"Checking advantage condition: {source}")
+            if condition(stats_block, target):
+                print(f"Advantage condition {source} applies")
+                tracker.add_advantage(stats_block)
+        for source, condition in self.disadvantage_conditions:
+            if skill and source != skill:
+                continue
+            print(f"Checking disadvantage condition: {source}")
+            if condition(stats_block, target):
+                print(f"Disadvantage condition {source} applies")
+                tracker.add_disadvantage(stats_block)
 
     def remove_effect(self, source: str):
+        bonus_to_remove = [b for b in self.bonuses if b[0] == source]
+        advantage_to_remove = [a for a in self.advantage_conditions if a[0] == source]
+        disadvantage_to_remove = [d for d in self.disadvantage_conditions if d[0] == source]
+        print(f"Removing effect {source}")
+        print(f"Bonuses to remove: {bonus_to_remove}")
+        print(f"All bonuses: {self.bonuses}")
+        print(f"Advantages to remove: {advantage_to_remove}")
+        print(f"All advantages: {self.advantage_conditions}")
+        print(f"Disadvantages to remove: {disadvantage_to_remove}")
+        print(f"All disadvantages: {self.disadvantage_conditions}")
         self.bonuses = [b for b in self.bonuses if b[0] != source]
         self.advantage_conditions = [a for a in self.advantage_conditions if a[0] != source]
         self.disadvantage_conditions = [d for d in self.disadvantage_conditions if d[0] != source]
