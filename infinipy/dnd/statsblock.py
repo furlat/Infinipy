@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field, computed_field
 from infinipy.dnd.docstrings import *
 import uuid
 from infinipy.dnd.contextual import ModifiableValue, ContextualEffects
-from infinipy.dnd.core import Ability, SkillSet,Size, MonsterType, Alignment, AbilityScores, Speed, SavingThrow, SkillBonus, DamageType, \
+from infinipy.dnd.core import Ability, SkillSet,Size, MonsterType, Alignment, AbilityScores, Speed, SavingThrow,SavingThrows, SkillBonus, DamageType, \
     Sense, Language, Dice, Skills, Targeting, ActionEconomy, ActionCost, ActionType, TargetRequirementType, TargetType
 from infinipy.dnd.conditions import Condition
 from infinipy.dnd.actions import Action, Attack, Dash, Disengage, Dodge, Help, Hide, AttackType
@@ -17,7 +17,7 @@ class StatsBlock(BaseModel):
     alignment: Alignment = Field(..., description=alignment_docstring)
     speed: Speed = Field(Speed(walk=ModifiableValue(base_value=30)), description=speed_docstring)
     ability_scores: AbilityScores = Field(default_factory=AbilityScores)
-    saving_throws: Dict[Ability, SavingThrow] = Field(default_factory=lambda: {ability: SavingThrow(ability=ability, proficient=False) for ability in Ability})
+    saving_throws: SavingThrows = Field(default_factory=SavingThrows)
     skills: SkillSet = Field(default_factory=SkillSet)
     vulnerabilities: List[DamageType] = Field([], description=vulnerabilities_resistances_immunities_docstring)
     resistances: List[DamageType] = Field([], description=vulnerabilities_resistances_immunities_docstring)

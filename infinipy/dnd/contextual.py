@@ -59,7 +59,7 @@ class ContextualEffects(BaseModel):
     def has_disadvantage(self, stats_block: 'StatsBlock', target:'StatsBlock') -> bool:
         return any(condition(stats_block, target) for _, condition in self.disadvantage_conditions)
 
-    def apply_advantage_disadvantage(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'], tracker: AdvantageTracker, skill: Optional[str] = None):
+    def apply_advantage_disadvantage(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'], tracker: AdvantageTracker):
         print(f"Applying advantage/disadvantage for {stats_block.name}")
         for source, condition in self.advantage_conditions:
             print(f"Checking advantage condition: {source}")
@@ -67,8 +67,7 @@ class ContextualEffects(BaseModel):
                 print(f"Advantage condition {source} applies")
                 tracker.add_advantage(stats_block)
         for source, condition in self.disadvantage_conditions:
-            if skill and source != skill:
-                continue
+           
             print(f"Checking disadvantage condition: {source}")
             if condition(stats_block, target):
                 print(f"Disadvantage condition {source} applies")

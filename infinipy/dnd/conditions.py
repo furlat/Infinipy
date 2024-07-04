@@ -105,7 +105,7 @@ class Charmed(Condition):
     @staticmethod
     def charmed_social_check(source: 'StatsBlock', target: 'StatsBlock') -> bool:
         print(f"Checking Charmed social condition: source={source.name}, target={target.name}")
-        if "Charmed" in target.active_conditions and target.active_conditions["Charmed"].source_entity_id == source.id:
+        if "Charmed" in source.active_conditions and source.active_conditions["Charmed"].source_entity_id == target.id:
             print("Charmed condition applies")
             return True
         print("Charmed condition does not apply")

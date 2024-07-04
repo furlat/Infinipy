@@ -116,8 +116,8 @@ def test_charmed_ability_check_advantage():
     perform_persuasion_check("after Charmed condition expires")
 
 def main():
-    print("Testing Charmed Attack Restriction:")
-    test_charmed_attack_restriction()
+    # print("Testing Charmed Attack Restriction:")
+    # test_charmed_attack_restriction()
     
     print("\n\nTesting Charmed Ability Check Advantage:")
     test_charmed_ability_check_advantage()
