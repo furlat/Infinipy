@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional, TYPE_CHECKING, Dict, Any, Tuple
 import uuid
-from infinipy.dnd.core import Duration, DurationType, HEARING_DEPENDENT_ABILITIES, Skills
+from infinipy.dnd.core import Duration, DurationType, HEARING_DEPENDENT_ABILITIES, Skills, Ability
 from infinipy.dnd.actions import Attack
 
 
@@ -22,7 +22,6 @@ class Condition(BaseModel):
     def remove(self, stats_block: 'StatsBlock') -> None:
         print(f"Removing condition {self.name} from {stats_block.name}")
         pass
-
 ## condition effects
 # | **Status Effect**       | **Description**                                                                                             | **Required Components in Submodels**                                                                                        |
 # |-------------------------|-------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
@@ -67,23 +66,47 @@ class Blinded(Condition):
     name: str = "Blinded"
 
     def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Blinded condition to {stats_block.name}")
+        
         # Add disadvantage to all attacks
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.hit_bonus.self_effects.add_disadvantage_condition("Blinded", lambda src, tgt: True)
+                action.hit_bonus.add_disadvantage_condition("Blinded", self.blinded_check)
         
         # Give advantage to all attacks against this creature
-        stats_block.armor_class.base_ac.target_effects.add_advantage_condition("Blinded", lambda src, tgt: True)
+        stats_block.armor_class.add_opponent_advantage_condition("Blinded", self.blinded_check)
+
+        # Add auto-fail condition for sight-based ability checks
+        for skill in Skills:
+            skill_obj = stats_block.skills.get_skill(skill)
+            skill_obj.add_self_auto_fail_condition("Blinded", self.blinded_sight_check)
 
     def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Blinded condition from {stats_block.name}")
+        
         # Remove disadvantage from all attacks
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.hit_bonus.self_effects.remove_effect("Blinded")
+                action.hit_bonus.remove_effect("Blinded")
         
         # Remove advantage from all attacks against this creature
-        stats_block.armor_class.base_ac.target_effects.remove_effect("Blinded")
+        stats_block.armor_class.remove_opponent_advantage_condition("Blinded")
 
+        # Remove auto-fail condition from all skills
+        for skill in Skills:
+            skill_obj = stats_block.skills.get_skill(skill)
+            skill_obj.remove_all_effects("Blinded")
+
+    @staticmethod
+    def blinded_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
+        return True  # Always apply the effect when blinded
+
+    @staticmethod
+    def blinded_sight_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
+        # Check if the context indicates this is a sight-based check
+        if context and context.get('requires_sight', False):
+            return True  # Auto-fail sight-based checks
+        return False  # Don't auto-fail other checks
 
 class Charmed(Condition):
     name: str = "Charmed"
@@ -94,104 +117,225 @@ class Charmed(Condition):
         # Prevent attacking the charmer
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.contextual_conditions["Charmed"] = self.charmed_attack_check
+                action.add_auto_fail_condition("Charmed", self.charmed_attack_check)
 
         social_skills = [Skills.DECEPTION, Skills.INTIMIDATION, Skills.PERFORMANCE, Skills.PERSUASION]
         for skill in social_skills:
             skill_obj = stats_block.skills.get_skill(skill)
             print(f"Adding Charmed advantage condition to {skill.value} for {stats_block.name}")
-            skill_obj.bonus.target_effects.add_advantage_condition("Charmed", self.charmed_social_check)
+            skill_obj.add_target_advantage_condition("Charmed", self.charmed_social_check)
 
-    @staticmethod
-    def charmed_social_check(source: 'StatsBlock', target: 'StatsBlock') -> bool:
-        print(f"Checking Charmed social condition: source={source.name}, target={target.name}")
-        if "Charmed" in source.active_conditions and source.active_conditions["Charmed"].source_entity_id == target.id:
-            print("Charmed condition applies")
-            return True
-        print("Charmed condition does not apply")
-        return False
-    
     def remove(self, stats_block: 'StatsBlock') -> None:
         print(f"Removing Charmed condition from {stats_block.name}")
         # Remove attack restriction
         for action in stats_block.actions:
             if isinstance(action, Attack):
-                action.contextual_conditions.pop("Charmed", None)
+                action.remove_effect("Charmed")
 
         # Remove social check advantage
         social_skills = [Skills.DECEPTION, Skills.INTIMIDATION, Skills.PERFORMANCE, Skills.PERSUASION]
         for skill in social_skills:
             skill_obj = stats_block.skills.get_skill(skill)
-            skill_obj.bonus.target_effects.remove_effect("Charmed")
+            skill_obj.remove_target_effect("Charmed")
 
     @staticmethod
-    def charmed_attack_check(source: 'StatsBlock', target:'StatsBlock') -> Tuple[bool, str]:
-        print("TRIGGERED ATTACK CHECKKKK")
-        if target and source and "Charmed" in source.active_conditions and target.id == source.active_conditions["Charmed"].source_entity_id:
-            return False, f"Cannot attack {target.name} due to being charmed."
-        return True, ""
+    def charmed_social_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
+        if target and "Charmed" in source.active_conditions and source.active_conditions["Charmed"].source_entity_id == target.id:
+            return True
+        return False
+
+    @staticmethod
+    def charmed_attack_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
+        if target and "Charmed" in source.active_conditions and target.id == source.active_conditions["Charmed"].source_entity_id:
+            return True
+        return False
+
+# In infinipy/dnd/conditions.py
 
 
-# class Deafened(Condition):
-#     name: str = "Deafened"
+class Frightened(Condition):
+    name: str = "Frightened"
+    source_entity_id: str
 
-#     def apply(self, stats_block: 'StatsBlock') -> None:
-#         for action in stats_block.actions:
-#             if isinstance(action, AbilityCheck) and action.ability in HEARING_DEPENDENT_ABILITIES:
-#                 action.automatic_fails.add(action.ability)
+    def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Frightened condition to {stats_block.name}")
+        
+        # Add disadvantage to all attacks
+        for action in stats_block.actions:
+            if isinstance(action, Attack):
+                action.hit_bonus.self_effects.add_disadvantage_condition("Frightened", self.frightened_check)
+        
+        # Add disadvantage to all skill checks
+        for skill in Skills:
+            skill_obj = stats_block.skills.get_skill(skill)
+            skill_obj.bonus.self_effects.add_disadvantage_condition("Frightened", self.frightened_check)
 
-#     def remove(self, stats_block: 'StatsBlock') -> None:
-#         for action in stats_block.actions:
-#             if isinstance(action, AbilityCheck) and action.ability in HEARING_DEPENDENT_ABILITIES:
-#                 action.automatic_fails.discard(action.ability)
+    def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Frightened condition from {stats_block.name}")
+        
+        # Remove disadvantage from all attacks
+        for action in stats_block.actions:
+            if isinstance(action, Attack):
+                action.hit_bonus.self_effects.remove_effect("Frightened")
+        
+        # Remove disadvantage from all skill checks
+        for skill in Skills:
+            skill_obj = stats_block.skills.get_skill(skill)
+            skill_obj.bonus.self_effects.remove_effect("Frightened")
 
-# class Frightened(Condition):
-#     name: str = "Frightened"
-
-#     def apply(self, stats_block: 'StatsBlock') -> None:
-#         if stats_block.is_in_line_of_sight(self.source_entity_id):
-#             for action in stats_block.actions:
-#                 if isinstance(action, Attack):
-#                     action.contextual_modifiers.add_self_disadvantage("Frightened", lambda src, tgt: True)
-#                 if isinstance(action, AbilityCheck):
-#                     action.set_disadvantage()
-
-#     def remove(self, stats_block: 'StatsBlock') -> None:
-#         for action in stats_block.actions:
-#             if isinstance(action, Attack):
-#                 action.contextual_modifiers.self_disadvantages = [
-#                     condition for condition in action.contextual_modifiers.self_disadvantages 
-#                     if condition[0] != "Frightened"
-#                 ]
-#             if isinstance(action, AbilityCheck):
-#                 action.set_advantage()
-
-#     def update(self, stats_block: 'StatsBlock') -> None:
-#         if stats_block.is_in_line_of_sight(self.source_entity_id):
-#             self.apply(stats_block)
-#         else:
-#             self.remove(stats_block)
+    @staticmethod
+    def frightened_check(source: 'StatsBlock', target: Optional['StatsBlock']) -> bool:
+        if "Frightened" in source.active_conditions:
+            frightened_condition = source.active_conditions["Frightened"]
+            return source.is_in_line_of_sight(frightened_condition.source_entity_id)
+        return False
 
 
-# class Grappled(Condition):
-#     name: str = "Grappled"
+class Grappled(Condition):
+    name: str = "Grappled"
+    source_entity_id: str
 
-#     def apply(self, stats_block: 'StatsBlock') -> None:
-#         for speed_type in ["walk", "fly", "swim", "burrow", "climb"]:
-#             stats_block.speed.modify_speed(speed_type, self.id, -stats_block.speed.get_speed(speed_type))
+    def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Grappled condition to {stats_block.name}")
+        stats_block.speed.set_speed_to_zero("Grappled")
 
-#     def remove(self, stats_block: 'StatsBlock') -> None:
-#         for speed_type in ["walk", "fly", "swim", "burrow", "climb"]:
-#             stats_block.speed.remove_speed_modifier(speed_type, self.id)
+    def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Grappled condition from {stats_block.name}")
+        stats_block.speed.reset_speed("Grappled")
+
+class Incapacitated(Condition):
+    name: str = "Incapacitated"
+
+    def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Incapacitated condition to {stats_block.name}")
+        stats_block.action_economy.modify_actions("Incapacitated", -stats_block.action_economy.actions.base_value)
+        stats_block.action_economy.modify_bonus_actions("Incapacitated", -stats_block.action_economy.bonus_actions.base_value)
+        stats_block.action_economy.modify_reactions("Incapacitated", -stats_block.action_economy.reactions.base_value)
+
+    def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Incapacitated condition from {stats_block.name}")
+        stats_block.action_economy.remove_actions_modifier("Incapacitated")
+        stats_block.action_economy.remove_bonus_actions_modifier("Incapacitated")
+        stats_block.action_economy.remove_reactions_modifier("Incapacitated")
+
+class Poisoned(Condition):
+    name: str = "Poisoned"
+
+    def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Poisoned condition to {stats_block.name}")
+        
+        # Add disadvantage to all attacks
+        for action in stats_block.actions:
+            if isinstance(action, Attack):
+                action.hit_bonus.self_effects.add_disadvantage_condition("Poisoned", self.poisoned_check)
+        
+        # Add disadvantage to all ability checks (which includes skill checks)
+        for skill in Skills:
+            skill_obj = stats_block.skills.get_skill(skill)
+            skill_obj.bonus.self_effects.add_disadvantage_condition("Poisoned", self.poisoned_check)
+
+    def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Poisoned condition from {stats_block.name}")
+        
+        # Remove disadvantage from all attacks
+        for action in stats_block.actions:
+            if isinstance(action, Attack):
+                action.hit_bonus.self_effects.remove_effect("Poisoned")
+        
+        # Remove disadvantage from all ability checks
+        for skill in Skills:
+            skill_obj = stats_block.skills.get_skill(skill)
+            skill_obj.bonus.self_effects.remove_effect("Poisoned")
+
+    @staticmethod
+    def poisoned_check(source: 'StatsBlock', target: Optional['StatsBlock']) -> bool:
+        return True  # Always apply disadvantage when poisoned
 
 
-# class Incapacitated(Condition):
-#     name: str = "Incapacitated"
+class Restrained(Condition):
+    name: str = "Restrained"
 
-#     def apply(self, stats_block: 'StatsBlock') -> None:
-#         stats_block.action_economy.modify_actions(self.id, -stats_block.action_economy.actions.base_value)
-#         stats_block.action_economy.modify_reactions(self.id, -stats_block.action_economy.reactions.base_value)
+    def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Restrained condition to {stats_block.name}")
+        
+        # Set speed to 0
+        stats_block.speed.set_speed_to_zero("Restrained")
+        
+        # Add disadvantage to all attacks
+        for action in stats_block.actions:
+            if isinstance(action, Attack):
+                action.hit_bonus.self_effects.add_disadvantage_condition("Restrained", self.restrained_check)
+        
+        # Add disadvantage to Dexterity saving throws
+        dex_save = stats_block.saving_throws.get_ability(Ability.DEX)
+        dex_save.bonus.self_effects.add_disadvantage_condition("Restrained", self.restrained_check)
 
-#     def remove(self, stats_block: 'StatsBlock') -> None:
-#         stats_block.action_economy.remove_actions_modifier(self.id)
-#         stats_block.action_economy.remove_reactions_modifier(self.id)
+    def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Restrained condition from {stats_block.name}")
+        
+        # Reset speed
+        stats_block.speed.reset_speed("Restrained")
+        
+        # Remove disadvantage from all attacks
+        for action in stats_block.actions:
+            if isinstance(action, Attack):
+                action.hit_bonus.self_effects.remove_effect("Restrained")
+        
+        # Remove disadvantage from Dexterity saving throws
+        dex_save = stats_block.saving_throws.get_ability(Ability.DEX)
+        dex_save.bonus.self_effects.remove_effect("Restrained")
+
+    @staticmethod
+    def restrained_check(source: 'StatsBlock', target: Optional['StatsBlock']) -> bool:
+        return True  # Always apply disadvantage when restrained
+
+
+class Dodging(Condition):
+    name: str = "Dodging"
+
+    def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Dodging condition to {stats_block.name}")
+        
+        # Add disadvantage to attacks against this creature
+        stats_block.armor_class.base_ac.target_effects.add_disadvantage_condition("Dodging", self.dodging_check)
+        
+        # Add advantage to Dexterity saving throws
+        dex_save = stats_block.saving_throws.get_ability(Ability.DEX)
+        dex_save.bonus.self_effects.add_advantage_condition("Dodging", self.dodging_check)
+
+    def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Dodging condition from {stats_block.name}")
+        
+        # Remove disadvantage from attacks against this creature
+        stats_block.armor_class.base_ac.target_effects.remove_effect("Dodging")
+        
+        # Remove advantage from Dexterity saving throws
+        dex_save = stats_block.saving_throws.get_ability(Ability.DEX)
+        dex_save.bonus.self_effects.remove_effect("Dodging")
+
+    @staticmethod
+    def dodging_check(source: 'StatsBlock', target: Optional['StatsBlock']) -> bool:
+        return True  # Always apply the effect when dodging
+    
+class Dashing(Condition):
+    name: str = "Dashing"
+
+    def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Dashing condition to {stats_block.name}")
+        
+        # Double the movement speed
+        for speed_type in ['walk', 'fly', 'swim', 'burrow', 'climb']:
+            current_speed = stats_block.speed.get_speed(speed_type, stats_block)
+            stats_block.speed.add_static_modifier(speed_type, "Dashing", current_speed)
+
+    def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Dashing condition from {stats_block.name}")
+        
+        # Remove the speed bonus
+        for speed_type in ['walk', 'fly', 'swim', 'burrow', 'climb']:
+            stats_block.speed.remove_static_modifier(speed_type, "Dashing")
+
+    @staticmethod
+    def dashing_check(source: 'StatsBlock', target: Optional['StatsBlock']) -> bool:
+        return True  # Always apply the effect when dashing
+    

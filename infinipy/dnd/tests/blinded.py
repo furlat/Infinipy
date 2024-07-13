@@ -15,83 +15,42 @@ def test_blinded_condition():
     goblin = create_goblin()
     skeleton = create_skeleton()
     
-    print("\n--- Initial State ---")
+    print("\n=== Testing Blinded Condition ===")
+    
+    print("\n1. Initial State")
     print_creature_details(goblin)
-    print("\n")
-    print_creature_details(skeleton)
     
-    print("\n--- Goblin attacks Skeleton (no conditions) ---")
-    attack_action = next(action for action in goblin.actions if isinstance(action, Attack))
-    hit, details = attack_action.roll_to_hit(skeleton, verbose=True)
-    print(f"Advantage status: {details['advantage_status']}")
-    print(f"Attack roll: {details['roll']}, Total hit bonus: {details['total_hit_bonus']}")
-    print(details)
-    if hit:
-        damage = attack_action.roll_damage()
-        skeleton.take_damage(damage)
-        print(f"Goblin hits Skeleton for {damage} damage. Skeleton HP: {skeleton.current_hit_points}")
-    else:
-        print(f"Goblin misses the attack. Required AC: {details['armor_class']}, Roll: {details['roll']}")
-    
-    # Apply the Blinded condition to the goblin
-    blinded_condition = Blinded(name="Blinded", duration=Duration(time=1, type=DurationType.ROUNDS))
+    print("\n2. Applying Blinded condition to Goblin")
+    blinded_condition = Blinded(name="Blinded", duration=Duration(time=3, type=DurationType.ROUNDS))
     goblin.apply_condition(blinded_condition)
-    
-    print("\n--- State After Applying Blinded Condition ---")
     print_creature_details(goblin)
     
-    print("\n--- Goblin attacks Skeleton (Blinded condition) ---")
-    attack_action = next(action for action in goblin.actions if isinstance(action, Attack))
-    hit, details = attack_action.roll_to_hit(skeleton, verbose=True)
-    print(f"Advantage status: {details['advantage_status']}")
-    print(f"Attack roll: {details['roll']}, Total hit bonus: {details['total_hit_bonus']}")
-    print(details)
-    if hit:
-        damage = attack_action.roll_damage()
-        skeleton.take_damage(damage)
-        print(f"Goblin hits Skeleton for {damage} damage. Skeleton HP: {skeleton.current_hit_points}")
-    else:
-        print(f"Goblin misses the attack due to being blinded. Required AC: {details['armor_class']}, Roll: {details['roll']}")
+    print("\n3. Goblin attempts a normal Perception check")
+    goblin.perform_skill_check(Skills.PERCEPTION, 15, context={'requires_sight': False})
     
-    print("\n--- Skeleton attacks Blinded Goblin ---")
-    skeleton_attack = next(action for action in skeleton.actions if isinstance(action, Attack))
-    hit, details = skeleton_attack.roll_to_hit(goblin, verbose=True)
-    print(f"Advantage status: {details['advantage_status']}")
-    print(f"Attack roll: {details['roll']}, Total hit bonus: {details['total_hit_bonus']}")
-    print(details)
-    if hit:
-        damage = skeleton_attack.roll_damage()
-        goblin.take_damage(damage)
-        print(f"Skeleton hits Goblin for {damage} damage. Goblin HP: {goblin.current_hit_points}")
-    else:
-        print(f"Skeleton misses the attack. Required AC: {details['armor_class']}, Roll: {details['roll']}")
+    print("\n4. Goblin attempts a sight-based Perception check")
+    goblin.perform_skill_check(Skills.PERCEPTION, 15, context={'requires_sight': True})
     
-    print("\n--- Advancing Rounds ---")
-    goblin.update_conditions()
+    print("\n5. Goblin attacks Skeleton")
+    perform_attack(goblin, skeleton)
     
-    print("\n--- State After Advancing Rounds ---")
+    print("\n6. Skeleton attacks Blinded Goblin")
+    perform_attack(skeleton, goblin)
+    
+    print("\n7. Advancing time to expire the Blinded condition")
+    for _ in range(3):
+        goblin.update_conditions()
     print_creature_details(goblin)
     
-    goblin.update_conditions()
-    
-    print("\n--- State After Another Round ---")
-    print_creature_details(goblin)
-    
-    print("\n--- Goblin attacks Skeleton (after Blinded condition expires) ---")
-    attack_action = next(action for action in goblin.actions if isinstance(action, Attack))
-    hit, details = attack_action.roll_to_hit(skeleton, verbose=True)
-    print(f"Advantage status: {details['advantage_status']}")
-    print(f"Attack roll: {details['roll']}, Total hit bonus: {details['total_hit_bonus']}")
-    print(details)
-    if hit:
-        damage = attack_action.roll_damage()
-        skeleton.take_damage(damage)
-        print(f"Goblin hits Skeleton for {damage} damage. Skeleton HP: {skeleton.current_hit_points}")
-    else:
-        print(f"Goblin misses the attack. Required AC: {details['armor_class']}, Roll: {details['roll']}")
+    print("\n8. Goblin attacks Skeleton after Blinded condition expires")
+    perform_attack(goblin, skeleton)
 
-def main():
-    test_blinded_condition()
+def perform_attack(attacker, defender):
+    attack_action = next(action for action in attacker.actions if isinstance(action, Attack))
+    hit, details = attack_action.roll_to_hit(defender, verbose=True)
+    print(f"  Advantage status: {details['advantage_status']}")
+    print(f"  Attack roll: {details['roll']}, Total: {details['roll'] + details['total_hit_bonus']}, AC: {details['armor_class']}")
+    print(f"  Result: {'Hit' if hit else 'Miss'}")
 
 if __name__ == "__main__":
-    main()
+    test_blinded_condition()

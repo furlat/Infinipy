@@ -352,6 +352,70 @@ class Charmed(Condition):
         return True, ""
 
 
+# class Deafened(Condition):
+#     name: str = "Deafened"
+
+#     def apply(self, stats_block: 'StatsBlock') -> None:
+#         for action in stats_block.actions:
+#             if isinstance(action, AbilityCheck) and action.ability in HEARING_DEPENDENT_ABILITIES:
+#                 action.automatic_fails.add(action.ability)
+
+#     def remove(self, stats_block: 'StatsBlock') -> None:
+#         for action in stats_block.actions:
+#             if isinstance(action, AbilityCheck) and action.ability in HEARING_DEPENDENT_ABILITIES:
+#                 action.automatic_fails.discard(action.ability)
+
+# class Frightened(Condition):
+#     name: str = "Frightened"
+
+#     def apply(self, stats_block: 'StatsBlock') -> None:
+#         if stats_block.is_in_line_of_sight(self.source_entity_id):
+#             for action in stats_block.actions:
+#                 if isinstance(action, Attack):
+#                     action.contextual_modifiers.add_self_disadvantage("Frightened", lambda src, tgt: True)
+#                 if isinstance(action, AbilityCheck):
+#                     action.set_disadvantage()
+
+#     def remove(self, stats_block: 'StatsBlock') -> None:
+#         for action in stats_block.actions:
+#             if isinstance(action, Attack):
+#                 action.contextual_modifiers.self_disadvantages = [
+#                     condition for condition in action.contextual_modifiers.self_disadvantages 
+#                     if condition[0] != "Frightened"
+#                 ]
+#             if isinstance(action, AbilityCheck):
+#                 action.set_advantage()
+
+#     def update(self, stats_block: 'StatsBlock') -> None:
+#         if stats_block.is_in_line_of_sight(self.source_entity_id):
+#             self.apply(stats_block)
+#         else:
+#             self.remove(stats_block)
+
+
+# class Grappled(Condition):
+#     name: str = "Grappled"
+
+#     def apply(self, stats_block: 'StatsBlock') -> None:
+#         for speed_type in ["walk", "fly", "swim", "burrow", "climb"]:
+#             stats_block.speed.modify_speed(speed_type, self.id, -stats_block.speed.get_speed(speed_type))
+
+#     def remove(self, stats_block: 'StatsBlock') -> None:
+#         for speed_type in ["walk", "fly", "swim", "burrow", "climb"]:
+#             stats_block.speed.remove_speed_modifier(speed_type, self.id)
+
+
+# class Incapacitated(Condition):
+#     name: str = "Incapacitated"
+
+#     def apply(self, stats_block: 'StatsBlock') -> None:
+#         stats_block.action_economy.modify_actions(self.id, -stats_block.action_economy.actions.base_value)
+#         stats_block.action_economy.modify_reactions(self.id, -stats_block.action_economy.reactions.base_value)
+
+#     def remove(self, stats_block: 'StatsBlock') -> None:
+#         stats_block.action_economy.remove_actions_modifier(self.id)
+#         stats_block.action_economy.remove_reactions_modifier(self.id)
+
 
 ---
 
@@ -491,7 +555,168 @@ import uuid
 import random
 from infinipy.dnd.contextual import ModifiableValue, AdvantageStatus, AdvantageTracker, ContextualEffects
 
+class Size(str, Enum):
+    TINY = "Tiny"
+    SMALL = "Small"
+    MEDIUM = "Medium"
+    LARGE = "Large"
+    HUGE = "Huge"
+    GARGANTUAN = "Gargantuan"
 
+class MonsterType(str, Enum):
+    ABERRATION = "Aberration"
+    BEAST = "Beast"
+    CELESTIAL = "Celestial"
+    CONSTRUCT = "Construct"
+    DRAGON = "Dragon"
+    ELEMENTAL = "Elemental"
+    FEY = "Fey"
+    FIEND = "Fiend"
+    GIANT = "Giant"
+    HUMANOID = "Humanoid"
+    MONSTROSITY = "Monstrosity"
+    OOZE = "Ooze"
+    PLANT = "Plant"
+    UNDEAD = "Undead"
+
+class Alignment(str, Enum):
+    LAWFUL_GOOD = "Lawful Good"
+    LAWFUL_NEUTRAL = "Lawful Neutral"
+    LAWFUL_EVIL = "Lawful Evil"
+    NEUTRAL_GOOD = "Neutral Good"
+    TRUE_NEUTRAL = "True Neutral"
+    NEUTRAL_EVIL = "Neutral Evil"
+    CHAOTIC_GOOD = "Chaotic Good"
+    CHAOTIC_NEUTRAL = "Chaotic Neutral"
+    CHAOTIC_EVIL = "Chaotic Evil"
+    UNALIGNED = "Unaligned"
+
+class Ability(str, Enum):
+    STR = "Strength"
+    DEX = "Dexterity"
+    CON = "Constitution"
+    INT = "Intelligence"
+    WIS = "Wisdom"
+    CHA = "Charisma"
+
+class Skills(str, Enum):
+    ACROBATICS = "Acrobatics"
+    ANIMAL_HANDLING = "Animal Handling"
+    ARCANA = "Arcana"
+    ATHLETICS = "Athletics"
+    DECEPTION = "Deception"
+    HISTORY = "History"
+    INSIGHT = "Insight"
+    INTIMIDATION = "Intimidation"
+    INVESTIGATION = "Investigation"
+    MEDICINE = "Medicine"
+    NATURE = "Nature"
+    PERCEPTION = "Perception"
+    PERFORMANCE = "Performance"
+    PERSUASION = "Persuasion"
+    RELIGION = "Religion"
+    SLEIGHT_OF_HAND = "Sleight of Hand"
+    STEALTH = "Stealth"
+    SURVIVAL = "Survival"
+
+class SensesType(str, Enum):
+    BLINDSIGHT = "Blindsight"
+    DARKVISION = "Darkvision"
+    TREMORSENSE = "Tremorsense"
+    TRUESIGHT = "Truesight"
+
+class DamageType(str, Enum):
+    ACID = "Acid"
+    BLUDGEONING = "Bludgeoning"
+    COLD = "Cold"
+    FIRE = "Fire"
+    FORCE = "Force"
+    LIGHTNING = "Lightning"
+    NECROTIC = "Necrotic"
+    PIERCING = "Piercing"
+    POISON = "Poison"
+    PSYCHIC = "Psychic"
+    RADIANT = "Radiant"
+    SLASHING = "Slashing"
+    THUNDER = "Thunder"
+
+class Language(str, Enum):
+    COMMON = "Common"
+    DWARVISH = "Dwarvish"
+    ELVISH = "Elvish"
+    GIANT = "Giant"
+    GNOMISH = "Gnomish"
+    GOBLIN = "Goblin"
+    HALFLING = "Halfling"
+    ORC = "Orc"
+    ABYSSAL = "Abyssal"
+    CELESTIAL = "Celestial"
+    DRACONIC = "Draconic"
+    DEEP_SPEECH = "Deep Speech"
+    INFERNAL = "Infernal"
+    PRIMORDIAL = "Primordial"
+    SYLVAN = "Sylvan"
+    UNDERCOMMON = "Undercommon"
+
+class ActionType(str, Enum):
+    ACTION = "Action"
+    BONUS_ACTION = "Bonus Action"
+    REACTION = "Reaction"
+    MOVEMENT = "Movement"
+    LEGENDARY_ACTION = "Legendary Action"
+    LAIR_ACTION = "Lair Action"
+
+class UsageType(str, Enum):
+    RECHARGE = "Recharge"
+    AT_WILL = "At Will"
+    CHARGES = "Charges"
+
+class RechargeType(str, Enum):
+    SHORT_REST = "Short Rest"
+    LONG_REST = "Long Rest"
+    ROUND = "Round"
+
+
+
+class StatusEffect(str, Enum):
+    DISADVANTAGE_ON_ATTACK_ROLLS = "Disadvantage on Attack Rolls"
+    ADVANTAGE_ON_DEX_SAVES = "Advantage on Dexterity Saving Throws"
+    HIDDEN = "Hidden"
+    DODGING = "Dodging"
+    HELPING = "Helping"
+    DASHING = "Dashing"
+
+class DurationType(str, Enum):
+    INSTANTANEOUS = "instantaneous"
+    ROUNDS = "rounds"
+    MINUTES = "minutes"
+    HOURS = "hours"
+    INDEFINITE = "indefinite"
+
+HEARING_DEPENDENT_ABILITIES = {Skills.PERCEPTION, Skills.PERFORMANCE, Skills.INSIGHT}
+
+class RangeType(str, Enum):
+    REACH = "Reach"
+    RANGE = "Range"
+
+class TargetType(str, Enum):
+    SELF = "Self"
+    ONE_TARGET = "One Target"
+    MULTIPLE_TARGETS = "Multiple Targets"
+    AREA = "Area"
+    ALLY = "Ally"  # Added this line
+
+class ShapeType(str, Enum):
+    SPHERE = "Sphere"
+    CUBE = "Cube"
+    CONE = "Cone"
+    LINE = "Line"
+    CYLINDER = "Cylinder"
+
+class TargetRequirementType(str, Enum):
+    HOSTILE = "Hostile"
+    ALLY = "Ally"
+    ANY = "Any"
 
 class Dice(BaseModel):
     dice_count: int

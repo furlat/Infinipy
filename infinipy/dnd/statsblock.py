@@ -1,8 +1,8 @@
-from typing import List, Dict, Optional, Set, Tuple, Any, Union
+from typing import List, Dict, Optional, Set, Tuple, Any, Union, Callable
 from pydantic import BaseModel, Field, computed_field
 from infinipy.dnd.docstrings import *
 import uuid
-from infinipy.dnd.contextual import ModifiableValue, ContextualEffects
+from infinipy.dnd.contextual import ModifiableValue, ContextualEffects, ContextAwareCondition
 from infinipy.dnd.core import Ability, SkillSet,Size, MonsterType, Alignment, AbilityScores, Speed, SavingThrow,SavingThrows, SkillBonus, DamageType, \
     Sense, Language, Dice, Skills, Targeting, ActionEconomy, ActionCost, ActionType, TargetRequirementType, TargetType
 from infinipy.dnd.conditions import Condition
@@ -75,15 +75,6 @@ class StatsBlock(BaseModel):
         for condition in self.active_conditions.values():
             condition.apply(self)
 
-    def _recompute_fields(self):
-        self.armor_class.compute_base_ac(self.ability_scores)
-        self._compute_passive_perception()
-        self.action_economy.movement.base_value = self.speed.walk.get_value(self)
-        self.action_economy.reset()
-        for action in self.actions:
-            if isinstance(action, Attack):
-                action.update_hit_bonus()
-        self.apply_active_conditions()
 
     @computed_field
     def max_hit_points(self) -> int:
@@ -140,24 +131,7 @@ class StatsBlock(BaseModel):
     def passive_perception(self) -> int:
         return self.computed_passive_perception.get_value(self)
 
-    def _compute_passive_perception(self):
-        perception_skill = self.skills.get_skill(Skills.PERCEPTION)
-        self.computed_passive_perception.base_value = 10 + perception_skill.get_bonus(self)
 
-    def perform_ability_check(self, ability: Ability, dc: int, target: Any = None) -> bool:
-        return self.ability_scores.get_ability_score(ability).perform_ability_check(self, dc, target)
-
-    def perform_skill_check(self, skill: Skills, dc: int, context: Any = None, return_roll: bool = False) -> Union[bool, Tuple[int, int, int]]:
-        print(f"StatsBlock performing skill check for {skill.value} (StatsBlock ID: {id(self)})")
-        skill_obj = self.skills.get_skill(skill)
-        result = skill_obj.perform_check(self, dc, context, return_roll=return_roll)
-        if return_roll:
-            roll, total = result
-            return roll, total, dc
-        return result
-
-    def perform_saving_throw(self, ability: Ability, dc: int, target: Any = None) -> bool:
-        return self.saving_throws[ability].perform_save(self, dc, target)
 
     def set_skill_proficiency(self, skill: Skills):
         self.skills.set_proficiency(skill)
@@ -183,6 +157,87 @@ class StatsBlock(BaseModel):
     def add_lair_action(self, lair_action: Action):
         lair_action.stats_block = self
         self.lair_actions.append(lair_action)
+
+
+    def perform_ability_check(self, ability: Ability, dc: int, target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+        return self.ability_scores.get_ability(ability).perform_ability_check(self, dc, target, context)
+
+    def perform_skill_check(self, skill: Skills, dc: int, target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None, return_roll: bool = False) -> Union[bool, Tuple[int, int, int]]:
+        print(f"StatsBlock performing skill check for {skill.value} (StatsBlock ID: {id(self)})")
+        if target:
+            print(f"  Target is {target.name} (StatsBlock ID: {id(target)})")
+        skill_obj = self.skills.get_skill(skill)
+        result = skill_obj.perform_check(self, dc, target, context, return_roll=return_roll)
+        if return_roll:
+            roll, total = result
+            return roll, total, dc
+        return result
+
+    def perform_saving_throw(self, ability: Ability, dc: int, target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+        return self.saving_throws.perform_save(ability, self, dc, target, context)
+
+    def causes_auto_fail_on_skill(self, skill: Skills, target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        skill_obj = self.skills.get_skill(skill)
+        return skill_obj.bonus.causes_auto_fail(self, target, context)
+
+    def causes_auto_success_on_skill(self, skill: Skills, target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        skill_obj = self.skills.get_skill(skill)
+        return skill_obj.bonus.causes_auto_success(self, target, context)
+
+    def causes_auto_fail_on_save(self, ability: Ability, target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        saving_throw = self.saving_throws.get_ability(ability)
+        return saving_throw.bonus.causes_auto_fail(self, target, context)
+
+    def causes_auto_success_on_save(self, ability: Ability, target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        saving_throw = self.saving_throws.get_ability(ability)
+        return saving_throw.bonus.causes_auto_success(self, target, context)
+
+    def add_cause_auto_fail_on_skill(self, skill: Skills, source: str, condition: ContextAwareCondition):
+        skill_obj = self.skills.get_skill(skill)
+        skill_obj.bonus.add_auto_fail_target_condition(source, condition)
+
+    def add_cause_auto_success_on_skill(self, skill: Skills, source: str, condition: ContextAwareCondition):
+        skill_obj = self.skills.get_skill(skill)
+        skill_obj.bonus.add_auto_success_target_condition(source, condition)
+
+    def add_cause_auto_fail_on_save(self, ability: Ability, source: str, condition: ContextAwareCondition):
+        saving_throw = self.saving_throws.get_ability(ability)
+        saving_throw.bonus.add_auto_fail_target_condition(source, condition)
+
+    def add_cause_auto_success_on_save(self, ability: Ability, source: str, condition: ContextAwareCondition):
+        saving_throw = self.saving_throws.get_ability(ability)
+        saving_throw.bonus.add_auto_success_target_condition(source, condition)
+
+    def remove_effect_on_skill(self, skill: Skills, source: str):
+        skill_obj = self.skills.get_skill(skill)
+        skill_obj.bonus.remove_effect(source)
+
+    def remove_effect_on_save(self, ability: Ability, source: str):
+        saving_throw = self.saving_throws.get_ability(ability)
+        saving_throw.bonus.remove_effect(source)
+
+
+    def _recompute_fields(self):
+        self.armor_class.compute_base_ac(self.ability_scores)
+        self._compute_passive_perception()
+        self.action_economy.movement.base_value = self.speed.walk.get_value(self)
+        self.action_economy.reset()
+        for action in self.actions:
+            if isinstance(action, Attack):
+                action.update_hit_bonus()
+        self.apply_active_conditions()
+
+    def _compute_passive_perception(self):
+        perception_skill = self.skills.get_skill(Skills.PERCEPTION)
+        self.computed_passive_perception.base_value = 10 + perception_skill.get_bonus(self)
+
+    def remove_cause_auto_fail_on_skill(self, skill: Skills, source: str):
+        skill_obj = self.skills.get_skill(skill)
+        skill_obj.bonus.remove_effect(source)
+
+    def remove_cause_auto_fail_on_save(self, ability: Ability, source: str):
+        saving_throw = self.saving_throws.get_ability(ability)
+        saving_throw.bonus.remove_effect(source)
 
     def equip_armor(self, armor: Armor):
         self.armor_class.equip_armor(armor, self.ability_scores)

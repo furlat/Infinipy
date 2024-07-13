@@ -9,7 +9,7 @@ from typing import List, Union
 from infinipy.dnd.docstrings import *
 import uuid
 import random
-from infinipy.dnd.contextual import ModifiableValue, AdvantageStatus, AdvantageTracker, ContextualEffects
+from infinipy.dnd.contextual import ModifiableValue, AdvantageStatus, AdvantageTracker, ContextualEffects, ContextAwareBonus, ContextAwareCondition
 
 class Size(str, Enum):
     TINY = "Tiny"
@@ -225,71 +225,80 @@ class Speed(BaseModel):
     burrow: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
     climb: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
 
-    def get_speed(self, speed_type: str) -> int:
-        return getattr(self, speed_type).get_value()
+    def get_speed(self, speed_type: str, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None) -> int:
+        return getattr(self, speed_type).get_value(stats_block, target)
 
-    def modify_speed(self, speed_type: str, source: str, value: int):
-        getattr(self, speed_type).add_modifier(source, value)
+    def add_static_modifier(self, speed_type: str, source: str, value: int):
+        getattr(self, speed_type).add_static_modifier(source, value)
 
-    def remove_speed_modifier(self, speed_type: str, source: str):
-        getattr(self, speed_type).remove_modifier(source)
+    def remove_static_modifier(self, speed_type: str, source: str):
+        getattr(self, speed_type).remove_static_modifier(source)
 
+    def add_bonus(self, speed_type: str, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
+        getattr(self, speed_type).self_effects.add_bonus(source, bonus)
+
+    def add_advantage_condition(self, speed_type: str, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+        getattr(self, speed_type).self_effects.add_advantage_condition(source, condition)
+
+    def add_disadvantage_condition(self, speed_type: str, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+        getattr(self, speed_type).self_effects.add_disadvantage_condition(source, condition)
+
+    def remove_effect(self, speed_type: str, source: str):
+        getattr(self, speed_type).self_effects.remove_effect(source)
+
+    def set_speed_to_zero(self, source: str):
+        for speed_type in ['walk', 'fly', 'swim', 'burrow', 'climb']:
+            self.add_static_modifier(speed_type, source, -getattr(self, speed_type).base_value)
+
+    def reset_speed(self, source: str):
+        for speed_type in ['walk', 'fly', 'swim', 'burrow', 'climb']:
+            self.remove_static_modifier(speed_type, source)
 
 
 
 class AbilityScore(BaseModel):
     ability: Ability
-    score: ModifiableValue = Field(default_factory= lambda: ModifiableValue(base_value=10))
+    score: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=10))
 
-    def get_score(self, stats_block: 'StatsBlock',  target: Optional['StatsBlock'] = None) -> int:
-        return self.score.get_value(stats_block, target)
+    def get_score(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> int:
+        return self.score.get_value(stats_block, target, context)
 
-    def get_modifier(self, stats_block: 'StatsBlock',  target: Optional['StatsBlock'] = None) -> int:
-        return (self.get_score(stats_block, target) - 10) // 2
+    def get_modifier(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> int:
+        return (self.get_score(stats_block, target, context) - 10) // 2
 
-    def get_advantage_status(self, stats_block: 'StatsBlock',  target: Optional['StatsBlock'] = None) -> AdvantageStatus:
-        print(f"Getting advantage status for {self.ability.value} ability check (Ability ID: {id(self)})")
-        advantage_tracker = AdvantageTracker()
-        #self status
-        self.score.get_advantage_status(stats_block, target)
-        if target:
-            target_ability = target.ability_scores.get_ability(self.ability)
-            target_ability.score.target_effects.apply_advantage_disadvantage(target, stats_block, advantage_tracker)
-        status = advantage_tracker.status
-        print(f"Final advantage status: {status}")
-        return status
+    def get_advantage_status(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> AdvantageStatus:
+        return self.score.get_advantage_status(stats_block, target, context)
     
-    def perform_ability_check(self, stats_block: 'StatsBlock', dc: int,  target: Optional['StatsBlock'] = None) -> bool:
+    def perform_ability_check(self, stats_block: 'StatsBlock', dc: int, target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+        if self.score.is_auto_fail(stats_block, target, context):
+            return False
+        if self.score.is_auto_success(stats_block, target, context):
+            return True
 
-        modifier = self.get_modifier(stats_block, target)
-
-        advantage_status = self.get_advantage_status(stats_block, target)
+        modifier = self.get_modifier(stats_block, target, context)
+        advantage_status = self.get_advantage_status(stats_block, target, context)
         
         dice = Dice(dice_count=1, dice_value=20, modifier=modifier, advantage_status=advantage_status)
         roll, _ = dice.roll_with_advantage()
         return roll >= dc
 
-    def add_self_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
-        self.score.self_effects.add_bonus(source, bonus)
+    def add_bonus(self, source: str, bonus: ContextAwareBonus):
+        self.score.add_bonus(source, bonus)
 
-    def add_target_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
-        self.score.target_effects.add_bonus(source, bonus)
+    def add_advantage_condition(self, source: str, condition: ContextAwareCondition):
+        self.score.add_advantage_condition(source, condition)
 
-    def add_self_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
-        self.score.self_effects.add_advantage_condition(source, condition)
+    def add_disadvantage_condition(self, source: str, condition: ContextAwareCondition):
+        self.score.add_disadvantage_condition(source, condition)
 
-    def add_target_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
-        self.score.target_effects.add_advantage_condition(source, condition)
+    def add_auto_fail_condition(self, source: str, condition: ContextAwareCondition):
+        self.score.add_auto_fail_self_condition(source, condition)
 
-    def add_self_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
-        self.score.self_effects.add_disadvantage_condition(source, condition)
-
-    def add_target_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
-        self.score.target_effects.add_disadvantage_condition(source, condition)
+    def add_auto_success_condition(self, source: str, condition: ContextAwareCondition):
+        self.score.add_auto_success_self_condition(source, condition)
 
     def remove_effect(self, source: str):
-        self.score.self_effects.remove_effect(source)
-        self.score.target_effects.remove_effect(source)
+        self.score.remove_effect(source)
 
 class AbilityScores(BaseModel):
     strength: AbilityScore = Field(default_factory=lambda: AbilityScore(ability=Ability.STR, score=ModifiableValue(base_value=10)))
@@ -303,13 +312,16 @@ class AbilityScores(BaseModel):
     def get_ability(self, ability: Ability) -> AbilityScore:
         return getattr(self, ability.value.lower())
 
-    def get_ability_modifier(self, ability: Ability, stats_block: 'StatsBlock', target: Any = None) -> int:
+    def get_ability_modifier(self, ability: Ability, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> int:
         ability_score = self.get_ability(ability)
-        return ability_score.get_modifier(stats_block, target)
+        return ability_score.get_modifier(stats_block, target, context)
 
+    def get_proficiency_bonus(self, ability: Ability, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> int:
+        return self.proficiency_bonus.get_value(stats_block, target, context)
 
-    def get_proficiency_bonus(self, ability: Ability, stats_block: 'StatsBlock', target: Any = None) -> int:
-        return self.proficiency_bonus.get_value(stats_block, target)
+    def perform_ability_check(self, ability: Ability, stats_block: 'StatsBlock', dc: int, target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+        ability_score = self.get_ability(ability)
+        return ability_score.perform_ability_check(stats_block, dc, target, context)
 
 ABILITY_TO_SKILLS = {
     Ability.STR: [Skills.ATHLETICS],
@@ -325,36 +337,44 @@ class Skill(BaseModel):
     skill: Skills
     proficient: bool = False
     expertise: bool = False
-    bonus: ModifiableValue = Field(default_factory=lambda:ModifiableValue(base_value=0))
+    bonus: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
 
-    def get_bonus(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None) -> int:
-        ability_bonus = stats_block.ability_scores.get_ability_modifier(self.ability, stats_block, target)
-        proficiency_bonus = stats_block.ability_scores.get_proficiency_bonus(self.ability, stats_block, target)
+    def get_bonus(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> int:
+        ability_bonus = stats_block.ability_scores.get_ability_modifier(self.ability, stats_block, target, context)
+        proficiency_bonus = stats_block.ability_scores.get_proficiency_bonus(self.ability, stats_block, target, context)
         if self.expertise:
             proficiency_bonus *= 2
         elif not self.proficient:
             proficiency_bonus = 0
         self.bonus.base_value = ability_bonus + proficiency_bonus
-        return self.bonus.get_value(stats_block, target)
+        return self.bonus.get_value(stats_block, target, context)
 
-    def get_advantage_status(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None) -> AdvantageStatus:
-        print(f"Getting advantage status for {self.skill.value} skill check (Skill ID: {id(self)})")
-        advantage_tracker = AdvantageTracker()
-        
-        self.bonus.self_effects.apply_advantage_disadvantage(stats_block, target, advantage_tracker)
-        
-        if target:
-            target_skill = target.skills.get_skill(self.skill)  # Use self.skill instead of self.ability
-            target_skill.bonus.target_effects.apply_advantage_disadvantage(target, stats_block, advantage_tracker)
-        
-        status = advantage_tracker.status
-        print(f"Final advantage status: {status}")
-        return status
+    def get_advantage_status(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> AdvantageStatus:
+        return self.bonus.get_advantage_status(stats_block, target, context)
 
-    def perform_check(self, stats_block: 'StatsBlock', dc: int, target: Optional['StatsBlock'] = None, return_roll: bool = False) -> Union[bool, Tuple[int, int]]:
+    def perform_check(self, stats_block: 'StatsBlock', dc: int, target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None, return_roll: bool = False) -> Union[bool, Tuple[int, int]]:
         print(f"Performing {self.ability.value} skill check")
-        bonus = self.get_bonus(stats_block, target)
-        advantage_status = self.get_advantage_status(stats_block, target)
+        
+        if self.bonus.is_auto_fail(stats_block, target, context):
+            print(f"Auto-fail condition met for {self.skill.value} check")
+            return (1, 1) if return_roll else False
+        
+        if self.bonus.is_auto_success(stats_block, target, context):
+            print(f"Auto-success condition met for {self.skill.value} check")
+            return (20, 20) if return_roll else True
+
+        bonus = self.get_bonus(stats_block, target, context)
+        
+        # Create a combined AdvantageTracker
+        advantage_tracker = AdvantageTracker()
+        self.bonus.self_effects.apply_advantage_disadvantage(stats_block, target, advantage_tracker, context)
+        if target:
+            #get the skill of the target
+            target_skill = target.skills.get_skill(self.skill)
+            target_skill.bonus.target_effects.apply_advantage_disadvantage(target, stats_block, advantage_tracker, context)
+        
+        advantage_status = advantage_tracker.status
+        
         print(f"Bonus: {bonus}, Advantage status: {advantage_status}")
         dice = Dice(dice_count=1, dice_value=20, modifier=bonus, advantage_status=advantage_status)
         roll, _ = dice.roll_with_advantage()
@@ -364,27 +384,48 @@ class Skill(BaseModel):
             return roll, total
         return total >= dc
     
-    def add_self_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
+    # Self effects
+    def add_self_bonus(self, source: str, bonus: ContextAwareBonus):
         self.bonus.self_effects.add_bonus(source, bonus)
 
-    def add_target_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
-        self.bonus.target_effects.add_bonus(source, bonus)
-
-    def add_self_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+    def add_self_advantage_condition(self, source: str, condition: ContextAwareCondition):
         self.bonus.self_effects.add_advantage_condition(source, condition)
 
-    def add_target_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
-        self.bonus.target_effects.add_advantage_condition(source, condition)
-
-    def add_self_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+    def add_self_disadvantage_condition(self, source: str, condition: ContextAwareCondition):
         self.bonus.self_effects.add_disadvantage_condition(source, condition)
 
-    def add_target_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+    def add_self_auto_fail_condition(self, source: str, condition: ContextAwareCondition):
+        self.bonus.self_effects.add_auto_fail_self_condition(source, condition)
+
+    def add_self_auto_success_condition(self, source: str, condition: ContextAwareCondition):
+        self.bonus.self_effects.add_auto_success_self_condition(source, condition)
+
+    # Target effects
+    def add_target_bonus(self, source: str, bonus: ContextAwareBonus):
+        self.bonus.target_effects.add_bonus(source, bonus)
+
+    def add_target_advantage_condition(self, source: str, condition: ContextAwareCondition):
+        self.bonus.target_effects.add_advantage_condition(source, condition)
+
+    def add_target_disadvantage_condition(self, source: str, condition: ContextAwareCondition):
         self.bonus.target_effects.add_disadvantage_condition(source, condition)
 
-    def remove_effect(self, source: str):
+    def add_target_auto_fail_condition(self, source: str, condition: ContextAwareCondition):
+        self.bonus.target_effects.add_auto_fail_self_condition(source, condition)
+
+    def add_target_auto_success_condition(self, source: str, condition: ContextAwareCondition):
+        self.bonus.target_effects.add_auto_success_self_condition(source, condition)
+
+    # Remove effects
+    def remove_self_effect(self, source: str):
         self.bonus.self_effects.remove_effect(source)
+
+    def remove_target_effect(self, source: str):
         self.bonus.target_effects.remove_effect(source)
+
+    def remove_all_effects(self, source: str):
+        self.remove_self_effect(source)
+        self.remove_target_effect(source)
 
 class SkillSet(BaseModel):
     acrobatics: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX, skill=Skills.ACROBATICS))
@@ -405,8 +446,6 @@ class SkillSet(BaseModel):
     sleight_of_hand: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX, skill=Skills.SLEIGHT_OF_HAND))
     stealth: Skill = Field(default_factory=lambda: Skill(ability=Ability.DEX, skill=Skills.STEALTH))
     survival: Skill = Field(default_factory=lambda: Skill(ability=Ability.WIS, skill=Skills.SURVIVAL))
-
-
     proficiencies: Set[Skills] = Field(default_factory=set)
     expertise: Set[Skills] = Field(default_factory=set)
 
@@ -421,61 +460,82 @@ class SkillSet(BaseModel):
     def set_expertise(self, skill: Skills):
         self.expertise.add(skill)
         self.get_skill(skill).expertise = True
+    
+    def add_effect_to_all_skills(self, effect_type: str, source: str, effect: Union[ContextAwareBonus, ContextAwareCondition]):
+        for skill in Skills:
+            skill_obj = self.get_skill(skill)
+            getattr(skill_obj, f"add_{effect_type}")(source, effect)
 
-    def perform_skill_check(self, skill: Skills, stats_block: 'StatsBlock', dc: int, target: Any = None) -> bool:
-        return self.get_skill(skill).perform_check(stats_block, dc, target)
+    def remove_effect_from_all_skills(self, effect_type: str, source: str):
+        for skill in Skills:
+            skill_obj = self.get_skill(skill)
+            getattr(skill_obj, f"remove_{effect_type}_effect")(source)
+
+    def remove_all_effects_from_all_skills(self, source: str):
+        for skill in Skills:
+            skill_obj = self.get_skill(skill)
+            skill_obj.remove_all_effects(source)
+
+    def perform_skill_check(self, skill: Skills, stats_block: 'StatsBlock', dc: int, target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+        return self.get_skill(skill).perform_check(stats_block, dc, target, context)
+
 
 class SavingThrow(BaseModel):
     ability: Ability
     proficient: bool
-    bonus: ModifiableValue = Field(default_factory=lambda:ModifiableValue(base_value=0))
-    
+    bonus: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
 
-    def get_bonus(self, stats_block: 'StatsBlock', target: Any = None) -> int:
-        ability_bonus = stats_block.ability_scores.get_ability_modifier(self.ability, stats_block, target)
-        proficiency_bonus = stats_block.ability_scores.proficiency_bonus.get_value(stats_block, target) if self.proficient else 0
+    def get_bonus(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> int:
+        ability_bonus = stats_block.ability_scores.get_ability_modifier(self.ability, stats_block, target, context)
+        proficiency_bonus = stats_block.ability_scores.proficiency_bonus.get_value(stats_block, target, context) if self.proficient else 0
         return ability_bonus + proficiency_bonus
     
-    def get_advantage_status(self, stats_block: 'StatsBlock',  target: Optional['StatsBlock'] = None) -> AdvantageStatus:
-        print(f"Getting advantage status for {self.ability.value} ability check (Ability ID: {id(self)})")
-        advantage_tracker = AdvantageTracker()
-        #self status
-        self.bonus.get_advantage_status(stats_block, target)
-        if target:
-            target_saving_throws = target.saving_throws.get_ability(self.ability)
-            target_saving_throws.bonus.target_effects.apply_advantage_disadvantage(target, stats_block,  advantage_tracker)
-        status = advantage_tracker.status
-        print(f"Final advantage status: {status}")
-        return status
+    def get_advantage_status(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> AdvantageStatus:
+        return self.bonus.get_advantage_status(stats_block, target, context)
     
-    def perform_save(self, stats_block: 'StatsBlock', dc: int, target: Any = None) -> bool:
-        bonus = self.get_bonus(stats_block, target)
-        advantage_status = self.get_advantage_status(stats_block, target)
+    def perform_save(self, stats_block: 'StatsBlock', dc: int, target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+        if self.bonus.is_auto_fail(stats_block, target, context):
+            print(f"Auto-fail condition met for {self.ability.value} saving throw")
+            return False
+        
+        if self.bonus.is_auto_success(stats_block, target, context):
+            print(f"Auto-success condition met for {self.ability.value} saving throw")
+            return True
+
+        bonus = self.get_bonus(stats_block, target, context)
+        # Create a combined AdvantageTracker
+        advantage_tracker = AdvantageTracker()
+        self.bonus.self_effects.apply_advantage_disadvantage(stats_block, target, advantage_tracker, context)
+        if target:
+            #get the skill of the target
+            target_skill = target.saving_throws.get_ability(self.ability)
+            target_skill.bonus.target_effects.apply_advantage_disadvantage(target, stats_block, advantage_tracker, context)
+        
+        advantage_status = advantage_tracker.status
+
         dice = Dice(dice_count=1, dice_value=20, modifier=bonus, advantage_status=advantage_status)
         roll, _ = dice.roll_with_advantage()
-        return roll >= dc
+        total = roll + bonus
+        print(f"Saving Throw: {self.ability.value}, Roll: {roll}, Total: {total}, DC: {dc}")
+        return total >= dc
 
-    def add_self_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
-        self.bonus.self_effects.add_bonus(source, bonus)
+    def add_bonus(self, source: str, bonus: ContextAwareBonus):
+        self.bonus.add_bonus(source, bonus)
 
-    def add_target_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
-        self.bonus.target_effects.add_bonus(source, bonus)
+    def add_advantage_condition(self, source: str, condition: ContextAwareCondition):
+        self.bonus.add_advantage_condition(source, condition)
 
-    def add_self_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
-        self.bonus.self_effects.add_advantage_condition(source, condition)
+    def add_disadvantage_condition(self, source: str, condition: ContextAwareCondition):
+        self.bonus.add_disadvantage_condition(source, condition)
 
-    def add_target_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
-        self.bonus.target_effects.add_advantage_condition(source, condition)
+    def add_auto_fail_condition(self, source: str, condition: ContextAwareCondition):
+        self.bonus.add_auto_fail_self_condition(source, condition)
 
-    def add_self_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
-        self.bonus.self_effects.add_disadvantage_condition(source, condition)
-
-    def add_target_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
-        self.bonus.target_effects.add_disadvantage_condition(source, condition)
+    def add_auto_success_condition(self, source: str, condition: ContextAwareCondition):
+        self.bonus.add_auto_success_self_condition(source, condition)
 
     def remove_effect(self, source: str):
-        self.bonus.self_effects.remove_effect(source)
-        self.bonus.target_effects.remove_effect(source)
+        self.bonus.remove_effect(source)
 
 
 class SavingThrows(BaseModel):
@@ -492,10 +552,21 @@ class SavingThrows(BaseModel):
     def set_proficiency(self, ability: Ability, value: bool = True):
         savingthrow = self.get_ability(ability)
         savingthrow.proficient = value
+    
+    def add_auto_fail_condition(self, ability: Ability, source: str, condition: ContextAwareCondition):
+        saving_throw = self.get_ability(ability)
+        saving_throw.add_auto_fail_condition(source, condition)
 
-    def perform_save(self, ability: Ability, stats_block: 'StatsBlock', dc: int, target: Any = None) -> bool:
-        return self.get_ability(ability).perform_save(stats_block, dc, target)
+    def add_auto_success_condition(self, ability: Ability, source: str, condition: ContextAwareCondition):
+        saving_throw = self.get_ability(ability)
+        saving_throw.add_auto_success_condition(source, condition)
 
+    def remove_effect(self, ability: Ability, source: str):
+        saving_throw = self.get_ability(ability)
+        saving_throw.remove_effect(source)
+
+    def perform_save(self, ability: Ability, stats_block: 'StatsBlock', dc: int, target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+        return self.get_ability(ability).perform_save(stats_block, dc, target, context)
 
 class SkillBonus(BaseModel):
     skill: Skills

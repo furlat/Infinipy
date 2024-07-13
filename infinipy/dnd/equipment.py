@@ -1,7 +1,7 @@
-from typing import List, Optional, Callable, TYPE_CHECKING
+from typing import List, Optional, Callable, TYPE_CHECKING, Dict, Any
 from pydantic import BaseModel, Field
 from enum import Enum
-from infinipy.dnd.contextual import ModifiableValue, ContextualEffects
+from infinipy.dnd.contextual import ModifiableValue, ContextualEffects, ContextAwareBonus, ContextAwareCondition
 
 if TYPE_CHECKING:
     from infinipy.dnd.statsblock import StatsBlock
@@ -62,32 +62,72 @@ class ArmorClass(BaseModel):
         self.base_ac.base_value = base_ac
         return self.base_ac.base_value
 
-    def get_value(self, stats_block: 'StatsBlock', attacker: Optional['StatsBlock'] = None) -> int:
-        return self.base_ac.get_value(stats_block, attacker)
+    def get_value(self, stats_block: 'StatsBlock', attacker: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> int:
+        return self.base_ac.get_value(stats_block, attacker, context)
 
-    def gives_attacker_advantage(self, stats_block: 'StatsBlock', attacker: 'StatsBlock') -> bool:
-        return any(cond(attacker, stats_block) for _, cond in self.base_ac.target_effects.advantage_conditions)
+    def gives_attacker_advantage(self, stats_block: 'StatsBlock', attacker: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        return self.base_ac.target_effects.has_advantage(attacker, stats_block, context)
 
-    def gives_attacker_disadvantage(self, stats_block: 'StatsBlock', attacker: 'StatsBlock') -> bool:
-        return any(cond(attacker, stats_block) for _, cond in self.base_ac.target_effects.disadvantage_conditions)
+    def gives_attacker_disadvantage(self, stats_block: 'StatsBlock', attacker: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        return self.base_ac.target_effects.has_disadvantage(attacker, stats_block, context)
 
-    def add_self_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
+    def gives_attacker_auto_fail(self, stats_block: 'StatsBlock', attacker: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        return self.base_ac.causes_auto_fail(stats_block, attacker, context)
+
+    def gives_attacker_auto_success(self, stats_block: 'StatsBlock', attacker: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        return self.base_ac.causes_auto_success(stats_block, attacker, context)
+
+    def add_self_bonus(self, source: str, bonus: ContextAwareBonus):
         self.base_ac.self_effects.add_bonus(source, bonus)
 
-    def add_opponent_bonus(self, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
+    def add_opponent_bonus(self, source: str, bonus: ContextAwareBonus):
         self.base_ac.target_effects.add_bonus(source, bonus)
 
-    def add_self_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+    def add_self_advantage_condition(self, source: str, condition: ContextAwareCondition):
         self.base_ac.self_effects.add_advantage_condition(source, condition)
 
-    def add_opponent_advantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+    def add_opponent_advantage_condition(self, source: str, condition: ContextAwareCondition):
         self.base_ac.target_effects.add_advantage_condition(source, condition)
 
-    def add_self_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+    def add_self_disadvantage_condition(self, source: str, condition: ContextAwareCondition):
         self.base_ac.self_effects.add_disadvantage_condition(source, condition)
 
-    def add_opponent_disadvantage_condition(self, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
+    def add_opponent_disadvantage_condition(self, source: str, condition: ContextAwareCondition):
         self.base_ac.target_effects.add_disadvantage_condition(source, condition)
+
+    def add_opponent_auto_fail_condition(self, source: str, condition: ContextAwareCondition):
+        self.base_ac.target_effects.add_auto_fail_self_condition(source, condition)
+
+    def add_opponent_auto_success_condition(self, source: str, condition: ContextAwareCondition):
+        self.base_ac.target_effects.add_auto_success_self_condition(source, condition)
+
+    def remove_self_bonus(self, source: str):
+        self.base_ac.self_effects.remove_effect(source)
+
+    def remove_opponent_bonus(self, source: str):
+        self.base_ac.target_effects.remove_effect(source)
+
+    def remove_self_advantage_condition(self, source: str):
+        self.base_ac.self_effects.remove_effect(source)
+
+    def remove_opponent_advantage_condition(self, source: str):
+        self.base_ac.target_effects.remove_effect(source)
+
+    def remove_self_disadvantage_condition(self, source: str):
+        self.base_ac.self_effects.remove_effect(source)
+
+    def remove_opponent_disadvantage_condition(self, source: str):
+        self.base_ac.target_effects.remove_effect(source)
+
+    def remove_opponent_auto_fail_condition(self, source: str):
+        self.base_ac.target_effects.remove_effect(source)
+
+    def remove_opponent_auto_success_condition(self, source: str):
+        self.base_ac.target_effects.remove_effect(source)
+
+    def remove_all_effects(self, source: str):
+        self.base_ac.self_effects.remove_effect(source)
+        self.base_ac.target_effects.remove_effect(source)
 
     def equip_armor(self, armor: Armor, ability_scores: 'AbilityScores'):
         self.equipped_armor = armor
