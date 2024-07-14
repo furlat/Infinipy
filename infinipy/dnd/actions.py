@@ -4,8 +4,10 @@ from enum import Enum
 from infinipy.dnd.contextual import ModifiableValue, AdvantageStatus, ContextAwareCondition, ContextAwareBonus
 from infinipy.dnd.core import (Dice, Ability, DamageType, Damage, Range, RangeType, ShapeType, TargetType,
                                TargetRequirementType, StatusEffect, Duration, LimitedUsage, UsageType,
-                               RechargeType, ActionType, ActionCost, Targeting, AdvantageTracker)
+                               RechargeType, ActionType, ActionCost, Targeting, AdvantageTracker, DurationType)
 from infinipy.dnd.equipment import Weapon, Armor, WeaponProperty, ArmorType
+from infinipy.dnd.conditions import Dashing,Dodging, Condition
+
 
 if TYPE_CHECKING:
     from infinipy.dnd.statsblock import StatsBlock
@@ -19,14 +21,39 @@ class Action(BaseModel):
     status_effects: List[StatusEffect] = Field(default_factory=list)
     duration: Union[Duration, None] = None
     stats_block: 'StatsBlock'
-    contextual_conditions: Dict[str, ContextAwareCondition] = Field(default_factory=dict)
+    prerequisite_conditions: Dict[str, ContextAwareCondition] = Field(default_factory=dict)
 
-    def prerequisite(self, stats_block: 'StatsBlock', target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
-        for condition_name, condition_check in self.contextual_conditions.items():
-            can_perform = condition_check(stats_block, target, context)
+    def add_prerequisite(self, name: str, condition: ContextAwareCondition):
+        self.prerequisite_conditions[name] = condition
+
+    def remove_prerequisite(self, name: str):
+        self.prerequisite_conditions.pop(name, None)
+
+    def prerequisite(self, stats_block: 'StatsBlock', target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> Tuple[bool, List[str]]:
+        failed_conditions = []
+        for condition_name, condition_check in self.prerequisite_conditions.items():
+            if not condition_check(stats_block, target, context):
+                failed_conditions.append(f"Failed condition: {condition_name}")
+        return len(failed_conditions) == 0, failed_conditions
+
+    def apply(self, targets: Union[List['StatsBlock'], 'StatsBlock'], context: Optional[Dict[str, Any]] = None) -> List[Tuple[bool, str]]:
+        if not isinstance(targets, list) and isinstance(targets, 'StatsBlock'):
+            targets = [targets]
+        else:
+            raise ValueError("Targets must be a list of StatsBlock objects or a single StatsBlock object")
+        
+        results = []
+        for target in targets:
+            can_perform, failed_conditions = self.prerequisite(self.stats_block, target, context)
             if not can_perform:
-                return False, f"Failed condition: {condition_name}"
-        return True, ""
+                results.append((False, "; ".join(failed_conditions)))
+            else:
+                results.append(self._apply(target, context))
+        
+        return results
+
+    def _apply(self, target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        raise NotImplementedError("Subclasses must implement this method")
 
 class AttackType(str, Enum):
     MELEE_WEAPON = "Melee Weapon"
@@ -40,14 +67,34 @@ class Attack(Action):
     range: Range
     damage: List[Damage]
     weapon: Optional[Weapon] = None
-    additional_effects: Union[str, None] = None
-    blocked_targets: Set[str] = Field(default_factory=set)
     is_critical_hit: bool = False
     hit_bonus: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
 
     def __init__(self, **data):
         super().__init__(**data)
         self.update_hit_bonus()
+        self._add_default_prerequisites()
+
+    def _add_default_prerequisites(self):
+        self.add_prerequisite("Line of Sight", self._check_line_of_sight)
+        self.add_prerequisite("Range", self._check_range)
+    
+    def _check_line_of_sight(self, stats_block: 'StatsBlock', target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        return stats_block.is_in_line_of_sight(target.id)
+
+    def _check_range(self, stats_block: 'StatsBlock', target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        distance = stats_block.distances.get(target.id, float('inf'))
+        return distance <= self.range.normal
+
+    def _apply(self, target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        hit, details = self.roll_to_hit(target, context, verbose=True)
+        
+        if hit:
+            damage = self.roll_damage(context)
+            target.take_damage(damage)
+            return True, f"Hit! Dealt {damage} damage to {target.name}. {target.name} now has {target.current_hit_points}/{target.max_hit_points} HP."
+        else:
+            return False, f"Miss! Attack roll ({details['roll']}) did not meet target AC ({details['armor_class']})."
 
     def update_hit_bonus(self):
         ability_modifier = getattr(self.stats_block.ability_scores, self.ability.value.lower()).get_modifier(self.stats_block)
@@ -201,20 +248,163 @@ class Attack(Action):
         return total_damage
 
 
-class Disengage(Action):
-    def __init__(self, stats_block: 'StatsBlock'):
-        super().__init__(
-            name="Disengage",
-            description="Your movement doesn't provoke opportunity attacks for the rest of the turn.",
-            cost=[ActionCost(type=ActionType.ACTION, cost=1)],
-            limited_usage=None,
-            targeting=Targeting(type=TargetType.SELF),
-            status_effects=[],
-            duration=Duration(time=1, unit="turn"),
-            stats_block=stats_block
-        )
+class DcAttack(Action):
+    ability: Ability
+    saving_throw: Ability
+    range: Range
+    damage: List[Damage]
+    dc_bonus: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
+    is_critical_fail: bool = False
+    half_damage_on_success: bool = True
+    conditions_on_success: List[Condition] = Field(default_factory=list)
+    conditions_on_failure: List[Condition] = Field(default_factory=list)
 
-class Dodge(Action):
+    def __init__(self, **data):
+        super().__init__(**data)
+        self.update_dc()
+        self._add_default_prerequisites()
+
+    def _add_default_prerequisites(self):
+        self.add_prerequisite("Line of Sight", self._check_line_of_sight)
+        self.add_prerequisite("Range", self._check_range)
+
+    def _check_line_of_sight(self, stats_block: 'StatsBlock', target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        return stats_block.is_in_line_of_sight(target.id)
+
+    def _check_range(self, stats_block: 'StatsBlock', target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        distance = stats_block.distances.get(target.id, float('inf'))
+        return distance <= self.range.normal
+
+    def update_dc(self):
+        ability_modifier = getattr(self.stats_block.ability_scores, self.ability.value.lower()).get_modifier(self.stats_block)
+        self.dc_bonus.base_value = 8 + ability_modifier + self.stats_block.proficiency_bonus
+
+    def _apply(self, target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        save_success, details = self.roll_saving_throw(target, context, verbose=True)
+        
+        if save_success:
+            success, message = self._apply_success(target, details, context)
+            self._apply_conditions(target, self.conditions_on_success)
+        else:
+            success, message = self._apply_failure(target, details, context)
+            self._apply_conditions(target, self.conditions_on_failure)
+        
+        return success, message
+
+    def _apply_success(self, target: 'StatsBlock', details: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        if self.half_damage_on_success and self.damage:
+            damage = self.roll_damage(context) // 2
+            target.take_damage(damage)
+            return True, f"Target succeeded save but takes half damage! Dealt {damage} damage to {target.name}. {target.name} now has {target.current_hit_points}/{target.max_hit_points} HP."
+        else:
+            return False, f"Target succeeded save! No damage taken."
+
+    def _apply_failure(self, target: 'StatsBlock', details: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        if self.damage:
+            damage = self.roll_damage(context)
+            target.take_damage(damage)
+            return True, f"Target failed save! Dealt {damage} damage to {target.name}. {target.name} now has {target.current_hit_points}/{target.max_hit_points} HP."
+        else:
+            return True, f"Target failed save!"
+
+    def _apply_conditions(self, target: 'StatsBlock', conditions: List[Condition]) -> None:
+        for condition in conditions:
+            target.apply_condition(condition)
+
+    def roll_saving_throw(self, target: 'StatsBlock', context: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Union[bool, Tuple[bool, Dict[str, Any]]]:
+        details = {
+            "auto_fail": False,
+            "auto_success": False,
+            "advantage_status": AdvantageStatus.NONE,
+            "roll": 0,
+            "dc": self.dc_bonus.get_value(self.stats_block, target, context),
+            "is_critical_fail": False,
+        }
+
+        # Check for auto-fail conditions
+        if target.saving_throws.get_ability(self.saving_throw).bonus.is_auto_fail(target, self.stats_block, context):
+            self.is_critical_fail = True
+            details["auto_fail"] = True
+            details["save_success"] = False
+            return (False, details) if verbose else False
+
+        # Check for auto-success conditions
+        if target.saving_throws.get_ability(self.saving_throw).bonus.is_auto_success(target, self.stats_block, context):
+            self.is_critical_fail = False
+            details["auto_success"] = True
+            details["save_success"] = True
+            return (True, details) if verbose else True
+
+        saving_throw = target.saving_throws.get_ability(self.saving_throw)
+        advantage_status = saving_throw.bonus.get_advantage_status(target, self.stats_block, context)
+
+        dice = Dice(dice_count=1, dice_value=20, modifier=saving_throw.get_bonus(target), advantage_status=advantage_status)
+        roll, roll_status = dice.roll_with_advantage()
+
+        self.is_critical_fail = roll_status == "critical_failure"
+        save_success = roll >= details["dc"]
+
+        details.update({
+            "save_success": save_success,
+            "roll": roll,
+            "roll_status": roll_status,
+            "advantage_status": advantage_status,
+            "is_critical_fail": self.is_critical_fail,
+        })
+
+        return (save_success, details) if verbose else save_success
+
+    def roll_damage(self, context: Optional[Dict[str, Any]] = None) -> int:
+        total_damage = 0
+        for damage in self.damage:
+            dice = Dice(
+                dice_count=damage.dice.dice_count,
+                dice_value=damage.dice.dice_value,
+                modifier=damage.dice.modifier,
+                advantage_status=AdvantageStatus.NONE
+            )
+            total_damage += dice.roll(is_critical=self.is_critical_fail)
+        return total_damage
+
+    def add_dc_bonus(self, source: str, bonus: ContextAwareBonus):
+        self.dc_bonus.add_bonus(source, bonus)
+
+    def remove_dc_bonus(self, source: str):
+        self.dc_bonus.remove_effect(source)
+
+    def action_docstring(self):
+        attack_range = str(self.range)
+        damage_strings = [
+            f"{d.dice.dice_count}d{d.dice.dice_value} {d.type.value} damage"
+            for d in self.damage
+        ]
+        damage_string = " plus ".join(damage_strings) if damage_strings else "No damage"
+        success_conditions = ", ".join([c.name for c in self.conditions_on_success])
+        failure_conditions = ", ".join([c.name for c in self.conditions_on_failure])
+        return (f"DC Attack: DC {self.dc_bonus.get_value(self.stats_block)} {self.saving_throw.value} saving throw, {attack_range}, "
+                f"{self.targeting.target_docstring()}. Failed Save: {damage_string}. "
+                f"On success: {success_conditions if success_conditions else 'No conditions'}. "
+                f"On failure: {failure_conditions if failure_conditions else 'No conditions'}. "
+                f"Average damage: {self.average_damage:.1f}.")
+
+    @computed_field
+    def average_damage(self) -> float:
+        return sum(d.dice.expected_value() for d in self.damage)
+    
+class SelfCondition(Action):
+    conditions: List[Condition] = Field(default_factory=list)
+
+    def _apply(self, target: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        for condition in self.conditions:
+            self.stats_block.apply_condition(condition)
+        return True, f"Applied {', '.join([c.name for c in self.conditions])} to self."
+
+    def action_docstring(self):
+        conditions_str = ', '.join([c.name for c in self.conditions])
+        return f"{self.name}: Applies {conditions_str} to self. {self.description}"
+
+
+class Dodge(SelfCondition):
     def __init__(self, stats_block: 'StatsBlock'):
         super().__init__(
             name="Dodge",
@@ -222,38 +412,17 @@ class Dodge(Action):
             cost=[ActionCost(type=ActionType.ACTION, cost=1)],
             limited_usage=None,
             targeting=Targeting(type=TargetType.SELF),
-            status_effects=[StatusEffect.DISADVANTAGE_ON_ATTACK_ROLLS, StatusEffect.ADVANTAGE_ON_DEX_SAVES],
-            duration=Duration(time=1, unit="round"),
-            stats_block=stats_block
+            stats_block=stats_block,
+            conditions=[
+                Dodging(
+                    name="Dodging",
+                    description="Disadvantage on attack rolls against you, advantage on Dexterity saving throws",
+                    duration=Duration(time=1, type=DurationType.ROUNDS)
+                )
+            ]
         )
 
-class Help(Action):
-    def __init__(self, stats_block: 'StatsBlock'):
-        super().__init__(
-            name="Help",
-            description="You lend your aid to another creature in the completion of a task, giving them advantage on their next ability check, or you aid a friendly creature in attacking a creature within 5 feet of you, giving advantage on the next attack roll.",
-            cost=[ActionCost(type=ActionType.ACTION, cost=1)],
-            limited_usage=None,
-            targeting=Targeting(type=TargetType.ALLY, number_of_targets=1, requirement=TargetRequirementType.ALLY),
-            status_effects=[StatusEffect.HELPING],
-            duration=Duration(time=1, unit="round"),
-            stats_block=stats_block
-        )
-
-class Hide(Action):
-    def __init__(self, stats_block: 'StatsBlock'):
-        super().__init__(
-            name="Hide",
-            description="You make a Dexterity (Stealth) check in an attempt to hide.",
-            cost=[ActionCost(type=ActionType.ACTION, cost=1)],
-            limited_usage=None,
-            targeting=Targeting(type=TargetType.SELF),
-            status_effects=[StatusEffect.HIDDEN],
-            duration=Duration(time="until discovered or you take an action", unit=""),
-            stats_block=stats_block
-        )
-
-class Dash(Action):
+class Dash(SelfCondition):
     def __init__(self, stats_block: 'StatsBlock'):
         super().__init__(
             name="Dash",
@@ -261,7 +430,12 @@ class Dash(Action):
             cost=[ActionCost(type=ActionType.ACTION, cost=1)],
             limited_usage=None,
             targeting=Targeting(type=TargetType.SELF),
-            status_effects=[StatusEffect.DASHING],
-            duration=Duration(time=1, unit="turn"),
-            stats_block=stats_block
+            stats_block=stats_block,
+            conditions=[
+                Dashing(
+                    name="Dashing",
+                    description="Double movement speed",
+                    duration=Duration(time=1, type=DurationType.ROUNDS)
+                )
+            ]
         )
