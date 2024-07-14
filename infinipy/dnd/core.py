@@ -225,8 +225,8 @@ class Speed(BaseModel):
     burrow: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
     climb: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
 
-    def get_speed(self, speed_type: str, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None) -> int:
-        return getattr(self, speed_type).get_value(stats_block, target)
+    def get_speed(self, speed_type: str, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> int:
+        return getattr(self, speed_type).get_value(stats_block, target, context)
 
     def add_static_modifier(self, speed_type: str, source: str, value: int):
         getattr(self, speed_type).add_static_modifier(source, value)
@@ -234,25 +234,22 @@ class Speed(BaseModel):
     def remove_static_modifier(self, speed_type: str, source: str):
         getattr(self, speed_type).remove_static_modifier(source)
 
-    def add_bonus(self, speed_type: str, source: str, bonus: Callable[['StatsBlock', Optional['StatsBlock']], int]):
-        getattr(self, speed_type).self_effects.add_bonus(source, bonus)
+    def add_bonus(self, speed_type: str, source: str, bonus: ContextAwareBonus):
+        getattr(self, speed_type).add_bonus(source, bonus)
 
-    def add_advantage_condition(self, speed_type: str, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
-        getattr(self, speed_type).self_effects.add_advantage_condition(source, condition)
-
-    def add_disadvantage_condition(self, speed_type: str, source: str, condition: Callable[['StatsBlock', Optional['StatsBlock']], bool]):
-        getattr(self, speed_type).self_effects.add_disadvantage_condition(source, condition)
+    def add_max_constraint(self, speed_type: str, source: str, constraint: ContextAwareBonus):
+        getattr(self, speed_type).add_max_constraint(source, constraint)
 
     def remove_effect(self, speed_type: str, source: str):
-        getattr(self, speed_type).self_effects.remove_effect(source)
+        getattr(self, speed_type).remove_effect(source)
 
-    def set_speed_to_zero(self, source: str):
+    def set_max_speed_to_zero(self, source: str):
         for speed_type in ['walk', 'fly', 'swim', 'burrow', 'climb']:
-            self.add_static_modifier(speed_type, source, -getattr(self, speed_type).base_value)
+            self.add_max_constraint(speed_type, source, lambda stats_block, target, context: 0)
 
-    def reset_speed(self, source: str):
+    def reset_max_speed(self, source: str):
         for speed_type in ['walk', 'fly', 'swim', 'burrow', 'climb']:
-            self.remove_static_modifier(speed_type, source)
+            self.remove_effect(speed_type, source)
 
 
 
@@ -665,26 +662,26 @@ class ActionEconomy(BaseModel):
         for attr in ['actions', 'bonus_actions', 'reactions', 'movement']:
             getattr(self, attr).base_value = getattr(self, attr).base_value
 
-    def modify_actions(self, source: str, value: int):
-        self.actions.add_static_modifier(source, value)
+    def set_max_actions(self, source: str, value: int):
+        self.actions.add_max_constraint(source, lambda stats_block, target, context: value)
 
-    def modify_bonus_actions(self, source: str, value: int):
-        self.bonus_actions.add_static_modifier(source, value)
+    def set_max_bonus_actions(self, source: str, value: int):
+        self.bonus_actions.add_max_constraint(source, lambda stats_block, target, context: value)
 
-    def modify_reactions(self, source: str, value: int):
-        self.reactions.add_static_modifier(source, value)
+    def set_max_reactions(self, source: str, value: int):
+        self.reactions.add_max_constraint(source, lambda stats_block, target, context: value)
+
+    def reset_max_actions(self, source: str):
+        self.actions.remove_effect(source)
+
+    def reset_max_bonus_actions(self, source: str):
+        self.bonus_actions.remove_effect(source)
+
+    def reset_max_reactions(self, source: str):
+        self.reactions.remove_effect(source)
 
     def modify_movement(self, source: str, value: int):
         self.movement.add_static_modifier(source, value)
-
-    def remove_actions_modifier(self, source: str):
-        self.actions.remove_static_modifier(source)
-
-    def remove_bonus_actions_modifier(self, source: str):
-        self.bonus_actions.remove_static_modifier(source)
-
-    def remove_reactions_modifier(self, source: str):
-        self.reactions.remove_static_modifier(source)
 
     def remove_movement_modifier(self, source: str):
         self.movement.remove_static_modifier(source)

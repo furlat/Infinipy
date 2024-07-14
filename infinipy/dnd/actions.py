@@ -83,6 +83,9 @@ class Attack(Action):
     def add_auto_success_condition(self, source: str, condition: ContextAwareCondition):
         self.hit_bonus.add_auto_success_self_condition(source, condition)
 
+    def add_auto_critical_condition(self, source: str, condition: ContextAwareCondition):
+        self.hit_bonus.add_auto_critical_self_condition(source, condition)
+
     def roll_to_hit(self, target: 'StatsBlock', context: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Union[bool, Tuple[bool, Dict[str, Any]]]:
         details = {
             "auto_fail": False,
@@ -90,6 +93,7 @@ class Attack(Action):
             "target_causes_auto_fail": False,
             "target_causes_auto_success": False,
             "advantage_status": AdvantageStatus.NONE,
+            "is_auto_critical": False,
             "roll": 0,
             "total_hit_bonus": 0,
             "armor_class": target.armor_class.get_value(target, self.stats_block, context),
@@ -106,22 +110,38 @@ class Attack(Action):
             details["auto_fail"] = True
             details["hit"] = False
             return (False, details) if verbose else False
+        
+        # Check if the target's armor class causes auto-fail or auto-success
+        elif target.armor_class.gives_attacker_auto_fail(target, self.stats_block, context):
+            self.is_critical_hit = False
+            details["target_causes_auto_fail"] = True
+            details["hit"] = False
+            return (False, details) if verbose else False
+        
+         # Check for auto-critical conditions
+        elif self.hit_bonus.is_auto_critical(self.stats_block, target, context):
+            self.is_critical_hit = True
+            details["is_auto_critical"] = True
+            details["hit"] = True
+            return (True, details) if verbose else True
+
+        # Check if the target's armor class causes auto-critical
+        elif target.armor_class.gives_attacker_auto_critical(target, self.stats_block, context):
+            self.is_critical_hit = True
+            details["is_auto_critical"] = True
+            details["hit"] = True
+            return (True, details) if verbose else True
 
         # Check for auto-success conditions
-        if self.hit_bonus.is_auto_success(self.stats_block, target, context):
+        elif self.hit_bonus.is_auto_success(self.stats_block, target, context):
             self.is_critical_hit = True
             details["auto_success"] = True
             details["hit"] = True
             return (True, details) if verbose else True
 
-        # Check if the target's armor class causes auto-fail or auto-success
-        if target.armor_class.gives_attacker_auto_fail(target, self.stats_block, context):
-            self.is_critical_hit = False
-            details["target_causes_auto_fail"] = True
-            details["hit"] = False
-            return (False, details) if verbose else False
+     # Check if the target's armor class causes auto-success
 
-        if target.armor_class.gives_attacker_auto_success(target, self.stats_block, context):
+        elif target.armor_class.gives_attacker_auto_success(target, self.stats_block, context):
             self.is_critical_hit = True
             details["target_causes_auto_success"] = True
             details["hit"] = True
@@ -164,17 +184,6 @@ class Attack(Action):
 
         return (hit, details) if verbose else hit
 
-    def roll_damage(self, context: Optional[Dict[str, Any]] = None) -> int:
-        total_damage = 0
-        for damage in self.damage:
-            dice = Dice(
-                dice_count=damage.dice.dice_count,
-                dice_value=damage.dice.dice_value,
-                modifier=damage.dice.modifier,
-                advantage_status=self.hit_bonus.get_advantage_status(self.stats_block, context=context)
-            )
-            total_damage += dice.roll(is_critical=self.is_critical_hit)
-        return total_damage
 
     def remove_effect(self, source: str):
         self.hit_bonus.remove_effect(source)

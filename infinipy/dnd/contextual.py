@@ -46,6 +46,21 @@ class ContextualEffects(BaseModel):
     auto_success_target_conditions: List[Tuple[str, ContextAwareCondition]] = Field(default_factory=list)
     min_constraints: List[Tuple[str, ContextAwareBonus]] = Field(default_factory=list)
     max_constraints: List[Tuple[str, ContextAwareBonus]] = Field(default_factory=list)
+    auto_critical_self_conditions: List[Tuple[str, ContextAwareCondition]] = Field(default_factory=list)
+    auto_critical_target_conditions: List[Tuple[str, ContextAwareCondition]] = Field(default_factory=list)
+
+    def add_auto_critical_self_condition(self, source: str, condition: ContextAwareCondition):
+        self.auto_critical_self_conditions.append((source, condition))
+
+    def add_auto_critical_target_condition(self, source: str, condition: ContextAwareCondition):
+        self.auto_critical_target_conditions.append((source, condition))
+
+    def is_auto_critical_self(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+        return any(condition(stats_block, target, context) for _, condition in self.auto_critical_self_conditions)
+
+    def is_auto_critical_target(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+        return any(condition(stats_block, target, context) for _, condition in self.auto_critical_target_conditions)
+
 
     def add_bonus(self, source: str, bonus: ContextAwareBonus):
         self.bonuses.append((source, bonus))
@@ -129,6 +144,8 @@ class ContextualEffects(BaseModel):
         self.auto_success_target_conditions = [as_ for as_ in self.auto_success_target_conditions if as_[0] != source]
         self.min_constraints = [mc for mc in self.min_constraints if mc[0] != source]
         self.max_constraints = [mc for mc in self.max_constraints if mc[0] != source]
+        self.auto_critical_self_conditions = [ac for ac in self.auto_critical_self_conditions if ac[0] != source]
+        self.auto_critical_target_conditions = [ac for ac in self.auto_critical_target_conditions if ac[0] != source]
 
 class ModifiableValue(BaseModel):
     base_value: int
@@ -182,6 +199,20 @@ class ModifiableValue(BaseModel):
         return (self.self_effects.is_auto_success_target(stats_block, target, context) or
                 (target and self.target_effects.is_auto_success_self(target, stats_block, context)))
 
+    def is_auto_critical(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+        return (self.self_effects.is_auto_critical_self(stats_block, target, context) or
+                (target and self.target_effects.is_auto_critical_target(target, stats_block, context)))
+
+    def causes_auto_critical(self, stats_block: 'StatsBlock', target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+        return (self.self_effects.is_auto_critical_target(stats_block, target, context) or
+                (target and self.target_effects.is_auto_critical_self(target, stats_block, context)))
+
+    def add_auto_critical_self_condition(self, source: str, condition: ContextAwareCondition):
+        self.self_effects.add_auto_critical_self_condition(source, condition)
+
+    def add_auto_critical_target_condition(self, source: str, condition: ContextAwareCondition):
+        self.self_effects.add_auto_critical_target_condition(source, condition)
+        
     def add_bonus(self, source: str, bonus: ContextAwareBonus):
         self.self_effects.add_bonus(source, bonus)
 
@@ -208,6 +239,8 @@ class ModifiableValue(BaseModel):
 
     def add_max_constraint(self, source: str, constraint: ContextAwareBonus):
         self.self_effects.add_max_constraint(source, constraint)
+    
+    
 
     def remove_effect(self, source: str):
         self.self_effects.remove_effect(source)

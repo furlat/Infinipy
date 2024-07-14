@@ -1,11 +1,11 @@
-# example_frightened.py
+# frightened.py
 
 from infinipy.dnd.statsblock import StatsBlock
 from infinipy.dnd.monsters.goblin import create_goblin
 from infinipy.dnd.monsters.skeleton import create_skeleton
 from infinipy.dnd.conditions import Frightened, Duration, DurationType
 from infinipy.dnd.actions import Attack
-from infinipy.dnd.core import Skills
+from infinipy.dnd.core import Skills, Ability
 
 def print_creature_details(creature: StatsBlock):
     print(f"{creature.name} Details:")
@@ -19,35 +19,42 @@ def test_frightened_condition():
     
     print("\n=== Testing Frightened Condition ===")
     
-    print("\n1. Applying Frightened condition to Goblin")
+    print("\n1. Initial State")
+    print_creature_details(goblin)
+    print_creature_details(skeleton)
+    
+    print("\n2. Applying Frightened condition to Goblin")
     frightened_condition = Frightened(name="Frightened", duration=Duration(time=3, type=DurationType.ROUNDS), source_entity_id=skeleton.id)
     goblin.apply_condition(frightened_condition)
     goblin.refresh_line_of_sight({skeleton.id})
+    print_creature_details(goblin)
     
-    print("\n2. Goblin attacks while Frightened (Skeleton in sight)")
+    print("\n3. Goblin attacks while Frightened (Skeleton in sight)")
     perform_attack(goblin, skeleton)
     
-    print("\n3. Goblin performs Stealth check while Frightened (Skeleton in sight)")
-    perform_skill_check(goblin, Skills.STEALTH, 15)
+    print("\n4. Goblin performs Stealth check while Frightened (Skeleton in sight)")
+    perform_ability_check(goblin, Ability.DEX, Skills.STEALTH, 15)
     
-    print("\n4. Removing Skeleton from Goblin's line of sight")
+    print("\n5. Removing Skeleton from Goblin's line of sight")
     goblin.refresh_line_of_sight(set())
+    print_creature_details(goblin)
     
-    print("\n5. Goblin attacks while Frightened (Skeleton not in sight)")
+    print("\n6. Goblin attacks while Frightened (Skeleton not in sight)")
     perform_attack(goblin, skeleton)
     
-    print("\n6. Goblin performs Perception check while Frightened (Skeleton not in sight)")
-    perform_skill_check(goblin, Skills.PERCEPTION, 15)
+    print("\n7. Goblin performs Perception check while Frightened (Skeleton not in sight)")
+    perform_ability_check(goblin, Ability.WIS, Skills.PERCEPTION, 15)
     
-    print("\n7. Advancing time to expire the Frightened condition")
+    print("\n8. Advancing time to expire the Frightened condition")
     for _ in range(3):
         goblin.update_conditions()
+    print_creature_details(goblin)
     
-    print("\n8. Goblin attacks after Frightened condition expires")
+    print("\n9. Goblin attacks after Frightened condition expires")
     perform_attack(goblin, skeleton)
     
-    print("\n9. Goblin performs Intimidation check after Frightened condition expires")
-    perform_skill_check(goblin, Skills.INTIMIDATION, 15)
+    print("\n10. Goblin performs Intimidation check after Frightened condition expires")
+    perform_ability_check(goblin, Ability.CHA, Skills.INTIMIDATION, 15)
 
 def perform_attack(attacker, defender):
     attack_action = next(action for action in attacker.actions if isinstance(action, Attack))
@@ -56,12 +63,13 @@ def perform_attack(attacker, defender):
     print(f"  Attack roll: {details['roll']}, Total: {details['roll'] + details['total_hit_bonus']}, AC: {details['armor_class']}")
     print(f"  Result: {'Hit' if hit else 'Miss'}")
 
-def perform_skill_check(creature, skill, dc):
+def perform_ability_check(creature, ability, skill, dc):
     roll, total, _ = creature.perform_skill_check(skill, dc, return_roll=True)
-    skill_obj = creature.skills.get_skill(skill)
-    advantage_status = skill_obj.bonus.get_advantage_status(creature)
+    ability_score = creature.ability_scores.get_ability(ability)
+    advantage_status = ability_score.get_advantage_status(creature)
+    print(f"  Ability: {ability.value}, Skill: {skill.value}")
     print(f"  Advantage status: {advantage_status}")
-    print(f"  Skill check roll: {roll}, Total: {total}, DC: {dc}")
+    print(f"  Ability check roll: {roll}, Total: {total}, DC: {dc}")
     print(f"  Result: {'Success' if total >= dc else 'Failure'}")
 
 if __name__ == "__main__":

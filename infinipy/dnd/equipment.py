@@ -76,6 +76,15 @@ class ArmorClass(BaseModel):
 
     def gives_attacker_auto_success(self, stats_block: 'StatsBlock', attacker: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
         return self.base_ac.causes_auto_success(stats_block, attacker, context)
+    
+    def gives_attacker_auto_critical(self, stats_block: 'StatsBlock', attacker: 'StatsBlock', context: Optional[Dict[str, Any]] = None) -> bool:
+        return self.base_ac.causes_auto_critical(stats_block, attacker, context)
+
+    def add_opponent_auto_critical_condition(self, source: str, condition: ContextAwareCondition):
+        self.base_ac.target_effects.add_auto_critical_self_condition(source, condition)
+
+    def remove_opponent_auto_critical_condition(self, source: str):
+        self.base_ac.target_effects.remove_effect(source)
 
     def add_self_bonus(self, source: str, bonus: ContextAwareBonus):
         self.base_ac.self_effects.add_bonus(source, bonus)

@@ -50,12 +50,17 @@ def test_incapacitated_condition():
     check_action_availability(goblin, ActionType.BONUS_ACTION)
     check_action_availability(goblin, ActionType.REACTION)
     
-    print("\n5. Advancing time to expire the Incapacitated condition")
+    print("\n5. Simulating 'Haste' effect while Incapacitated")
+    goblin.action_economy.actions.add_static_modifier("Haste", 1)
+    print_creature_details(goblin)
+    check_action_availability(goblin, ActionType.ACTION)
+    
+    print("\n6. Advancing time to expire the Incapacitated condition")
     for _ in range(2):
         goblin.update_conditions()
     print_creature_details(goblin)
     
-    print("\n6. Checking action availability after Incapacitated condition expires")
+    print("\n7. Checking action availability after Incapacitated condition expires")
     check_action_availability(goblin, ActionType.ACTION)
     check_action_availability(goblin, ActionType.BONUS_ACTION)
     check_action_availability(goblin, ActionType.REACTION)

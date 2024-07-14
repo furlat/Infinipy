@@ -43,6 +43,9 @@ class StatsBlock(BaseModel):
     active_conditions: Dict[Tuple[str, str], Condition] = Field(default_factory=dict)
     modifier_immunity: List[str] = Field(default_factory=list)
     line_of_sight: Set[str] = Field(default_factory=set)
+    distances: Dict[str, int] = Field(default_factory=dict)
+
+
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -63,6 +66,27 @@ class StatsBlock(BaseModel):
 
     def is_in_line_of_sight(self, entity_id: str) -> bool:
         return entity_id in self.line_of_sight
+    
+
+    def refresh_distances(self, new_distances: Dict[str, int]):
+        """Update the entire distances dictionary."""
+        self.distances = new_distances
+
+    def add_distance(self, target_id: str, distance: int):
+        """Add or update the distance to a specific target."""
+        self.distances[target_id] = distance
+
+    def remove_distance(self, target_id: str):
+        """Remove a target from the distances dictionary."""
+        self.distances.pop(target_id, None)
+
+    def is_within_distance(self, target_id: str, max_distance: int) -> bool:
+        """Check if a target is within or equal to a certain distance."""
+        return self.distances.get(target_id, float('inf')) <= max_distance
+
+    def get_targets_within_distance(self, max_distance: int) -> List[str]:
+        """Get all targets within or equal to a certain distance."""
+        return [target_id for target_id, distance in self.distances.items() if distance <= max_distance]
 
     def remove_condition(self, condition_name: str):
         if condition_name in self.active_conditions:

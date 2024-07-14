@@ -29,7 +29,7 @@ def test_grappled_condition():
     print(f"Goblin tries to move: {'Can move' if goblin.speed.get_speed('walk', goblin) > 0 else 'Cannot move'}")
     
     print("\n4. Adding a speed bonus while Grappled")
-    goblin.speed.add_bonus('walk', "Magic Boost", lambda src, tgt: 10)
+    goblin.speed.add_bonus('walk', "Magic Boost", lambda src, tgt,ctx: 10)
     print_creature_details(goblin)
     
     print("\n5. Advancing time to expire the Grappled condition")
