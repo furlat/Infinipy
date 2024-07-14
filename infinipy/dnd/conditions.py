@@ -22,28 +22,6 @@ class Condition(BaseModel):
     def remove(self, stats_block: 'StatsBlock') -> None:
         print(f"Removing condition {self.name} from {stats_block.name}")
         pass
-## condition effects
-# | **Status Effect**       | **Description**                                                                                             | **Required Components in Submodels**                                                                                        |
-# |-------------------------|-------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
-# | **Blinded**   V          | Cannot see, automatically fails any check requiring sight, attack rolls have disadvantage.                  | `Attack`: Add ability to apply disadvantage; `AbilityCheck`: Add failure condition for sight-related checks.                |
-# | **Charmed**   V          | Cannot attack the charmer, the charmer has advantage on social interactions.                                | `Attack`: Add logic to prevent attacking charmer; `AbilityCheck`: Add advantage for social interactions with charmer.       |
-# | **Deafened**            | Cannot hear, automatically fails any check requiring hearing.                                               | `AbilityCheck`: Add failure condition for hearing-related checks.                                                           |
-# | **Frightened**   V       | Disadvantage on ability checks and attack rolls while the source of fear is in sight.                       | `Attack`: Add ability to apply disadvantage; `AbilityCheck`: Add ability to apply disadvantage.                              |
-# | **Grappled**      V      | Speed becomes 0, can't benefit from any bonus to speed.                                                     | `Speed`: Add logic to set speed to 0.                                                                                       |
-# | **Incapacitated**   V    | Cannot take actions or reactions.                                                                           | `ActionEconomy`: Add logic to block actions and reactions.                                                                  |
-# | **Invisible**           | Impossible to see without special sense, attacks against have disadvantage, attacks have advantage.         | `Attack`: Add ability to apply advantage/disadvantage.                                                                      |
-# | **Paralyzed**           | Incapacitated, can't move or speak, automatically fails Strength and Dexterity saves, attacks have advantage. | `ActionEconomy`: Add logic to block actions and reactions; `Speed`: Add logic to set speed to 0; `SavingThrow`: Add failure condition. |
-# | **Petrified**           | Transformed into solid inanimate substance, incapacitated, and unaware of surroundings.                     | `ActionEconomy`: Add logic to block actions and reactions; `Speed`: Add logic to set speed to 0; `SavingThrow`: Add failure condition. |
-# | **Poisoned**    V        | Disadvantage on attack rolls and ability checks.                                                            | `Attack`: Add ability to apply disadvantage; `AbilityCheck`: Add ability to apply disadvantage.                              |
-# | **Prone**               | Disadvantage on attack rolls, attacks within 5 feet have advantage, others have disadvantage.               | `Attack`: Add ability to apply advantage/disadvantage.                                                                      |
-# | **Restrained**   V       | Speed becomes 0, attack rolls have disadvantage, Dexterity saves have disadvantage.                         | `Speed`: Add logic to set speed to 0; `Attack`: Add ability to apply disadvantage; `SavingThrow`: Add ability to apply disadvantage. |
-# | **Stunned**             | Incapacitated, can't move, can speak only falteringly.                                                      | `ActionEconomy`: Add logic to block actions and reactions; `Speed`: Add logic to set speed to 0; `SavingThrow`: Add failure condition. |
-# | **Unconscious**         | Incapacitated, can't move or speak, unaware of surroundings, drops held items, falls prone.                | `ActionEconomy`: Add logic to block actions and reactions; `Speed`: Add logic to set speed to 0; `SavingThrow`: Add failure condition. |
-# | **Dodging**      V       | Attacks against have disadvantage, Dexterity saves have advantage.                                          | `Attack`: Add ability to apply disadvantage; `SavingThrow`: Add ability to apply advantage.                                  |
-# | **Dashing**     V        | Movement increases by an additional speed.                                                                  | `Speed`: Add logic to increase movement.                                                                                    |
-# | **Hiding**              | Makes Dexterity (Stealth) checks to hide.                                                                   | `AbilityCheck`: Add logic for hiding mechanic.                                                                              |
-# | **Helping**             | Lends aid to another creature, giving advantage on next ability check or attack roll.                       | `Attack`: Add ability to apply advantage; `AbilityCheck`: Add ability to apply advantage.                                   |
-
 
 
 class Blinded(Condition):
@@ -134,6 +112,30 @@ class Charmed(Condition):
             return True
         return False
 
+    
+class Dashing(Condition):
+    name: str = "Dashing"
+
+    def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Dashing condition to {stats_block.name}")
+        
+        # Double the movement speed
+        for speed_type in ['walk', 'fly', 'swim', 'burrow', 'climb']:
+            current_speed = stats_block.speed.get_speed(speed_type, stats_block)
+            stats_block.speed.add_static_modifier(speed_type, "Dashing", current_speed)
+
+    def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Dashing condition from {stats_block.name}")
+        
+        # Remove the speed bonus
+        for speed_type in ['walk', 'fly', 'swim', 'burrow', 'climb']:
+            stats_block.speed.remove_static_modifier(speed_type, "Dashing")
+
+    @staticmethod
+    def dashing_check(source: 'StatsBlock', target: Optional['StatsBlock'] = None,  context: Optional[Dict[str, Any]] = None) -> bool:
+        return True  # Always apply the effect when dashing
+    
+
 class Deafened(Condition):
     name: str = "Deafened"
 
@@ -159,6 +161,35 @@ class Deafened(Condition):
         if context and context.get('requires_hearing', False):
             return True  # Auto-fail hearing-based checks
         return False  # Don't auto-fail other checks
+    
+    
+class Dodging(Condition):
+    name: str = "Dodging"
+
+    def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Dodging condition to {stats_block.name}")
+        
+        # Add disadvantage to attacks against this creature
+        stats_block.armor_class.base_ac.target_effects.add_disadvantage_condition("Dodging", self.dodging_check)
+        
+        # Add advantage to Dexterity saving throws
+        dex_save = stats_block.saving_throws.get_ability(Ability.DEX)
+        dex_save.bonus.self_effects.add_advantage_condition("Dodging", self.dodging_check)
+
+    def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Dodging condition from {stats_block.name}")
+        
+        # Remove disadvantage from attacks against this creature
+        stats_block.armor_class.base_ac.target_effects.remove_effect("Dodging")
+        
+        # Remove advantage from Dexterity saving throws
+        dex_save = stats_block.saving_throws.get_ability(Ability.DEX)
+        dex_save.bonus.self_effects.remove_effect("Dodging")
+
+    @staticmethod
+    def dodging_check(source: 'StatsBlock', target: Optional['StatsBlock'] = None,  context: Optional[Dict[str, Any]] = None) -> bool:
+        return True  # Always apply the effect when dodging
+    
 
 class Frightened(Condition):
     name: str = "Frightened"
@@ -358,6 +389,51 @@ class Poisoned(Condition):
     @staticmethod
     def poisoned_check(source: 'StatsBlock', target: Optional['StatsBlock'] = None,  context: Optional[Dict[str, Any]] = None) -> bool:
         return True  # Always apply disadvantage when poisoned
+    
+
+class Prone(Condition):
+    name: str = "Prone"
+
+    def apply(self, stats_block: 'StatsBlock') -> None:
+        print(f"Applying Prone condition to {stats_block.name}")
+        
+        # Disadvantage on attack rolls
+        for action in stats_block.actions:
+            if isinstance(action, Attack):
+                action.add_contextual_disadvantage("Prone", self.prone_attack_check)
+        
+        # Advantage on melee attacks within 5 feet, disadvantage on attacks from more than 10 feet
+        stats_block.armor_class.add_opponent_advantage_condition("Prone", self.prone_melee_advantage_check)
+        stats_block.armor_class.add_opponent_disadvantage_condition("Prone", self.prone_ranged_disadvantage_check)
+
+    def remove(self, stats_block: 'StatsBlock') -> None:
+        print(f"Removing Prone condition from {stats_block.name}")
+        
+        # Remove disadvantage on attack rolls
+        for action in stats_block.actions:
+            if isinstance(action, Attack):
+                action.remove_effect("Prone")
+        
+        # Remove advantage and disadvantage conditions from armor class
+        stats_block.armor_class.remove_opponent_advantage_condition("Prone")
+        stats_block.armor_class.remove_opponent_disadvantage_condition("Prone")
+
+    @staticmethod
+    def prone_attack_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
+        return True  # Always apply disadvantage to own attacks when prone
+
+    @staticmethod
+    def prone_melee_advantage_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
+        if target is None or source is None:
+            return False
+        return source.is_within_distance(target.id, 5)  # 5 feet for melee range
+
+    @staticmethod
+    def prone_ranged_disadvantage_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
+        if target is None or source is None:
+            return False
+        return not source.is_within_distance(target.id, 10)  # More than 10 feet for ranged attacks
+    
 
 class Stunned(Condition):
     name: str = "Stunned"
@@ -439,53 +515,85 @@ class Restrained(Condition):
     def restrained_check(source: 'StatsBlock', target: Optional['StatsBlock'] = None,  context: Optional[Dict[str, Any]] = None) -> bool:
         return True  # Always apply disadvantage when restrained
 
-
-class Dodging(Condition):
-    name: str = "Dodging"
-
-    def apply(self, stats_block: 'StatsBlock') -> None:
-        print(f"Applying Dodging condition to {stats_block.name}")
-        
-        # Add disadvantage to attacks against this creature
-        stats_block.armor_class.base_ac.target_effects.add_disadvantage_condition("Dodging", self.dodging_check)
-        
-        # Add advantage to Dexterity saving throws
-        dex_save = stats_block.saving_throws.get_ability(Ability.DEX)
-        dex_save.bonus.self_effects.add_advantage_condition("Dodging", self.dodging_check)
-
-    def remove(self, stats_block: 'StatsBlock') -> None:
-        print(f"Removing Dodging condition from {stats_block.name}")
-        
-        # Remove disadvantage from attacks against this creature
-        stats_block.armor_class.base_ac.target_effects.remove_effect("Dodging")
-        
-        # Remove advantage from Dexterity saving throws
-        dex_save = stats_block.saving_throws.get_ability(Ability.DEX)
-        dex_save.bonus.self_effects.remove_effect("Dodging")
-
-    @staticmethod
-    def dodging_check(source: 'StatsBlock', target: Optional['StatsBlock'] = None,  context: Optional[Dict[str, Any]] = None) -> bool:
-        return True  # Always apply the effect when dodging
-    
-class Dashing(Condition):
-    name: str = "Dashing"
+class Unconscious(Condition):
+    name: str = "Unconscious"
 
     def apply(self, stats_block: 'StatsBlock') -> None:
-        print(f"Applying Dashing condition to {stats_block.name}")
+        print(f"Applying Unconscious condition to {stats_block.name}")
         
-        # Double the movement speed
-        for speed_type in ['walk', 'fly', 'swim', 'burrow', 'climb']:
-            current_speed = stats_block.speed.get_speed(speed_type, stats_block)
-            stats_block.speed.add_static_modifier(speed_type, "Dashing", current_speed)
+        # Incapacitated effects (can't take actions or reactions)
+        stats_block.action_economy.set_max_actions("Unconscious", 0)
+        stats_block.action_economy.set_max_bonus_actions("Unconscious", 0)
+        stats_block.action_economy.set_max_reactions("Unconscious", 0)
+        
+        # Can't move
+        stats_block.speed.set_max_speed_to_zero("Unconscious")
+        
+        # Auto-fail STR and DEX saves
+        stats_block.saving_throws.get_ability(Ability.STR).add_auto_fail_condition("Unconscious", self.unconscious_check)
+        stats_block.saving_throws.get_ability(Ability.DEX).add_auto_fail_condition("Unconscious", self.unconscious_check)
+        
+        # Advantage on attacks against
+        stats_block.armor_class.add_opponent_advantage_condition("Unconscious", self.unconscious_check)
+        
+        # Critical hit on attacks within 5 feet
+        stats_block.armor_class.add_opponent_auto_critical_condition("Unconscious", self.unconscious_melee_check)
+        
+        # Apply Prone condition
+        # Disadvantage on attack rolls
+        for action in stats_block.actions:
+            if isinstance(action, Attack):
+                action.add_contextual_disadvantage("Unconscious", Prone.prone_attack_check)
+        
+        # Advantage on melee attacks within 5 feet, disadvantage on attacks from more than 10 feet
+        stats_block.armor_class.add_opponent_advantage_condition("Unconscious", Prone.prone_melee_advantage_check)
+        stats_block.armor_class.add_opponent_disadvantage_condition("Unconscious", Prone.prone_ranged_disadvantage_check)
 
     def remove(self, stats_block: 'StatsBlock') -> None:
-        print(f"Removing Dashing condition from {stats_block.name}")
+        print(f"Removing Unconscious condition from {stats_block.name}")
         
-        # Remove the speed bonus
-        for speed_type in ['walk', 'fly', 'swim', 'burrow', 'climb']:
-            stats_block.speed.remove_static_modifier(speed_type, "Dashing")
+        # Remove Incapacitated effects
+        stats_block.action_economy.reset_max_actions("Unconscious")
+        stats_block.action_economy.reset_max_bonus_actions("Unconscious")
+        stats_block.action_economy.reset_max_reactions("Unconscious")
+        
+        # Remove movement restriction
+        stats_block.speed.reset_max_speed("Unconscious")
+        
+        # Remove auto-fail on STR and DEX saves
+        stats_block.saving_throws.get_ability(Ability.STR).remove_effect("Unconscious")
+        stats_block.saving_throws.get_ability(Ability.DEX).remove_effect("Unconscious")
+        
+        # Remove advantage on attacks against
+        stats_block.armor_class.remove_opponent_advantage_condition("Unconscious")
+        
+        # Remove auto-critical condition
+        stats_block.armor_class.remove_opponent_auto_critical_condition("Unconscious")
+        
+        # Remove disadvantage on attack rolls
+        for action in stats_block.actions:
+            if isinstance(action, Attack):
+                action.remove_effect("Unconscious")
+        
+        # Remove advantage and disadvantage conditions from armor class
+        stats_block.armor_class.remove_opponent_advantage_condition("Unconscious")
+        stats_block.armor_class.remove_opponent_disadvantage_condition("Unconscious")
 
     @staticmethod
-    def dashing_check(source: 'StatsBlock', target: Optional['StatsBlock'] = None,  context: Optional[Dict[str, Any]] = None) -> bool:
-        return True  # Always apply the effect when dashing
-    
+    def unconscious_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
+        return True  # Always apply the effect when unconscious
+
+    @staticmethod
+    def unconscious_melee_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
+        if target is None or source is None:
+            return False
+        return source.is_within_distance(target.id, 5)  # 5 feet for melee range
+
+
+## missing condition effects
+## condition effects
+# | **Status Effect**       | **Description**                                                                                             | **Required Components in Submodels**                                                                                        |
+# |-------------------------|-------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
+# | **Petrified**           | Transformed into solid inanimate substance, incapacitated, and unaware of surroundings.                     | `ActionEconomy`: Add logic to block actions and reactions; `Speed`: Add logic to set speed to 0; `SavingThrow`: Add failure condition. |
+# | **Hiding**              | Makes Dexterity (Stealth) checks to hide.                                                                   | `AbilityCheck`: Add logic for hiding mechanic.                                                                              |
+# | **Helping**             | Lends aid to another creature, giving advantage on next ability check or attack roll.                       | `Attack`: Add ability to apply advantage; `AbilityCheck`: Add ability to apply advantage.                                   |
