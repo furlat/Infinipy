@@ -33,7 +33,7 @@ entity2 = Entity(id="entity2")
 
 # Add entities to the battle map
 battle_map.add_entity(entity1, (1, 1))
-battle_map.add_entity(entity2, (2, 2))
+battle_map.add_entity(entity2, (12, 5))
 
 # Move entity1
 battle_map.move_entity(entity1, (3, 3))

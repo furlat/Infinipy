@@ -10,169 +10,36 @@ from infinipy.dnd.docstrings import *
 import uuid
 import random
 from infinipy.dnd.contextual import ModifiableValue, AdvantageStatus, AdvantageTracker, ContextualEffects, ContextAwareBonus, ContextAwareCondition
+from infinipy.dnd.dnd_enums import Ability, Skills, SensesType, ActionType, RechargeType, UsageType, DurationType, RangeType, TargetType, ShapeType, TargetRequirementType, DamageType
 
-class Size(str, Enum):
-    TINY = "Tiny"
-    SMALL = "Small"
-    MEDIUM = "Medium"
-    LARGE = "Large"
-    HUGE = "Huge"
-    GARGANTUAN = "Gargantuan"
+class RegistryHolder:
+    _registry: Dict[str, 'RegistryHolder'] = {}
+    _types: Set[type] = set()
 
-class MonsterType(str, Enum):
-    ABERRATION = "Aberration"
-    BEAST = "Beast"
-    CELESTIAL = "Celestial"
-    CONSTRUCT = "Construct"
-    DRAGON = "Dragon"
-    ELEMENTAL = "Elemental"
-    FEY = "Fey"
-    FIEND = "Fiend"
-    GIANT = "Giant"
-    HUMANOID = "Humanoid"
-    MONSTROSITY = "Monstrosity"
-    OOZE = "Ooze"
-    PLANT = "Plant"
-    UNDEAD = "Undead"
+    @classmethod
+    def register(cls, instance: 'RegistryHolder'):
+        cls._registry[instance.id] = instance
+        cls._types.add(type(instance))
 
-class Alignment(str, Enum):
-    LAWFUL_GOOD = "Lawful Good"
-    LAWFUL_NEUTRAL = "Lawful Neutral"
-    LAWFUL_EVIL = "Lawful Evil"
-    NEUTRAL_GOOD = "Neutral Good"
-    TRUE_NEUTRAL = "True Neutral"
-    NEUTRAL_EVIL = "Neutral Evil"
-    CHAOTIC_GOOD = "Chaotic Good"
-    CHAOTIC_NEUTRAL = "Chaotic Neutral"
-    CHAOTIC_EVIL = "Chaotic Evil"
-    UNALIGNED = "Unaligned"
+    @classmethod
+    def get_instance(cls, instance_id: str):
+        return cls._registry.get(instance_id)
 
-class Ability(str, Enum):
-    STR = "Strength"
-    DEX = "Dexterity"
-    CON = "Constitution"
-    INT = "Intelligence"
-    WIS = "Wisdom"
-    CHA = "Charisma"
+    @classmethod
+    def all_instances(cls, filter_type=True):
+        if filter_type:
+            return [instance for instance in cls._registry.values() if isinstance(instance, cls)]
+        return list(cls._registry.values())
 
-class Skills(str, Enum):
-    ACROBATICS = "Acrobatics"
-    ANIMAL_HANDLING = "Animal Handling"
-    ARCANA = "Arcana"
-    ATHLETICS = "Athletics"
-    DECEPTION = "Deception"
-    HISTORY = "History"
-    INSIGHT = "Insight"
-    INTIMIDATION = "Intimidation"
-    INVESTIGATION = "Investigation"
-    MEDICINE = "Medicine"
-    NATURE = "Nature"
-    PERCEPTION = "Perception"
-    PERFORMANCE = "Performance"
-    PERSUASION = "Persuasion"
-    RELIGION = "Religion"
-    SLEIGHT_OF_HAND = "Sleight of Hand"
-    STEALTH = "Stealth"
-    SURVIVAL = "Survival"
+    @classmethod
+    def all_instances_by_type(cls, type: type):
+        return [instance for instance in cls._registry.values() if isinstance(instance, type)]
 
-class SensesType(str, Enum):
-    BLINDSIGHT = "Blindsight"
-    DARKVISION = "Darkvision"
-    TREMORSENSE = "Tremorsense"
-    TRUESIGHT = "Truesight"
-
-class DamageType(str, Enum):
-    ACID = "Acid"
-    BLUDGEONING = "Bludgeoning"
-    COLD = "Cold"
-    FIRE = "Fire"
-    FORCE = "Force"
-    LIGHTNING = "Lightning"
-    NECROTIC = "Necrotic"
-    PIERCING = "Piercing"
-    POISON = "Poison"
-    PSYCHIC = "Psychic"
-    RADIANT = "Radiant"
-    SLASHING = "Slashing"
-    THUNDER = "Thunder"
-
-class Language(str, Enum):
-    COMMON = "Common"
-    DWARVISH = "Dwarvish"
-    ELVISH = "Elvish"
-    GIANT = "Giant"
-    GNOMISH = "Gnomish"
-    GOBLIN = "Goblin"
-    HALFLING = "Halfling"
-    ORC = "Orc"
-    ABYSSAL = "Abyssal"
-    CELESTIAL = "Celestial"
-    DRACONIC = "Draconic"
-    DEEP_SPEECH = "Deep Speech"
-    INFERNAL = "Infernal"
-    PRIMORDIAL = "Primordial"
-    SYLVAN = "Sylvan"
-    UNDERCOMMON = "Undercommon"
-
-class ActionType(str, Enum):
-    ACTION = "Action"
-    BONUS_ACTION = "Bonus Action"
-    REACTION = "Reaction"
-    MOVEMENT = "Movement"
-    LEGENDARY_ACTION = "Legendary Action"
-    LAIR_ACTION = "Lair Action"
-
-class UsageType(str, Enum):
-    RECHARGE = "Recharge"
-    AT_WILL = "At Will"
-    CHARGES = "Charges"
-
-class RechargeType(str, Enum):
-    SHORT_REST = "Short Rest"
-    LONG_REST = "Long Rest"
-    ROUND = "Round"
-
-
-
-class StatusEffect(str, Enum):
-    DISADVANTAGE_ON_ATTACK_ROLLS = "Disadvantage on Attack Rolls"
-    ADVANTAGE_ON_DEX_SAVES = "Advantage on Dexterity Saving Throws"
-    HIDDEN = "Hidden"
-    DODGING = "Dodging"
-    HELPING = "Helping"
-    DASHING = "Dashing"
-
-class DurationType(str, Enum):
-    INSTANTANEOUS = "instantaneous"
-    ROUNDS = "rounds"
-    MINUTES = "minutes"
-    HOURS = "hours"
-    INDEFINITE = "indefinite"
-
-HEARING_DEPENDENT_ABILITIES = {Skills.PERCEPTION, Skills.PERFORMANCE, Skills.INSIGHT}
-
-class RangeType(str, Enum):
-    REACH = "Reach"
-    RANGE = "Range"
-
-class TargetType(str, Enum):
-    SELF = "Self"
-    ONE_TARGET = "One Target"
-    MULTIPLE_TARGETS = "Multiple Targets"
-    AREA = "Area"
-    ALLY = "Ally"  # Added this line
-
-class ShapeType(str, Enum):
-    SPHERE = "Sphere"
-    CUBE = "Cube"
-    CONE = "Cone"
-    LINE = "Line"
-    CYLINDER = "Cylinder"
-
-class TargetRequirementType(str, Enum):
-    HOSTILE = "Hostile"
-    ALLY = "Ally"
-    ANY = "Any"
+    @classmethod
+    def all_types(cls, as_string=True):
+        if as_string:
+            return [type_name.__name__ for type_name in cls._types]
+        return cls._types
 
 class Dice(BaseModel):
     dice_count: int
@@ -565,89 +432,186 @@ class SavingThrows(BaseModel):
     def perform_save(self, ability: Ability, stats_block: 'StatsBlock', dc: int, target: Optional['StatsBlock'] = None, context: Optional[Dict[str, Any]] = None) -> bool:
         return self.get_ability(ability).perform_save(stats_block, dc, target, context)
 
-class SkillBonus(BaseModel):
-    skill: Skills
-    bonus: int
+
+
+class BaseSpatial(BaseModel):
+    battlemap_id: str
+    origin: Tuple[int, int]
+
+    def get_entities_at(self, position: Tuple[int, int]) -> List[str]:
+        battlemap = RegistryHolder.get_instance(self.battlemap_id)
+        return list(battlemap.positions.get(position, set()))
+
+    def filter_positions(self, condition: Callable[[Tuple[int, int]], bool]) -> List[Tuple[int, int]]:
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def get_entities(self, positions: List[Tuple[int, int]]) -> List[str]:
+        battlemap = RegistryHolder.get_instance(self.battlemap_id)
+        return [entity_id for pos in positions for entity_id in battlemap.positions.get(pos, set())]
+    
+class FOV(BaseSpatial):
+    visible_tiles: Set[Tuple[int, int]] = Field(default_factory=set)
+
+    def is_visible(self, position: Tuple[int, int]) -> bool:
+        return position in self.visible_tiles
+
+    def filter_positions(self, condition: Callable[[Tuple[int, int]], bool]) -> List[Tuple[int, int]]:
+        return [pos for pos in self.visible_tiles if condition(pos)]
+
+    def get_visible_positions(self) -> List[Tuple[int, int]]:
+        return list(self.visible_tiles)
+
+    def get_visible_entities(self) -> List[str]:
+        return self.get_entities(self.get_visible_positions())
+
+    def get_positions_in_range(self, range: int) -> List[Tuple[int, int]]:
+        return self.filter_positions(lambda pos: 
+            ((pos[0] - self.origin[0])**2 + (pos[1] - self.origin[1])**2)**0.5 * 5 <= range
+        )
+
+    def get_entities_in_range(self, range: int) -> List[str]:
+        return self.get_entities(self.get_positions_in_range(range))
+    
+class DistanceMatrix(BaseSpatial):
+    distances: Dict[Tuple[int, int], int] = Field(default_factory=dict)
+
+    def get_distance(self, position: Tuple[int, int]) -> Optional[int]:
+        return self.distances.get(position)
+
+    def filter_positions(self, condition: Callable[[Tuple[int, int]], bool]) -> List[Tuple[int, int]]:
+        return [pos for pos, distance in self.distances.items() if condition(pos)]
+
+    def get_positions_within_distance(self, max_distance: int) -> List[Tuple[int, int]]:
+        return self.filter_positions(lambda pos: self.distances[pos] <= max_distance)
+
+    def get_entities_within_distance(self, max_distance: int) -> List[str]:
+        return self.get_entities(self.get_positions_within_distance(max_distance))
+
+    def get_adjacent_positions(self) -> List[Tuple[int, int]]:
+        return self.get_positions_within_distance(1)
+
+    def get_adjacent_entities(self) -> List[str]:
+        return self.get_entities(self.get_adjacent_positions())
+
+class Path(BaseSpatial):
+    path: List[Tuple[int, int]]
+    
+    def get_path_length(self) -> int:
+        return len(self.path) - 1  # Subtract 1 because the start position is included
+
+    def is_valid_movement(self, movement_budget: int) -> bool:
+        return self.get_path_length() <= movement_budget
+
+    def get_positions_on_path(self) -> List[Tuple[int, int]]:
+        return self.path
+
+    def get_entities_on_path(self) -> List[str]:
+        return self.get_entities(self.get_positions_on_path())
+    
+class Paths(BaseSpatial):
+    paths: Dict[Tuple[int, int], List[Tuple[int, int]]] = Field(default_factory=dict)
+
+    def get_path_to(self, destination: Tuple[int, int]) -> Optional[List[Tuple[int, int]]]:
+        return self.paths.get(destination)
+
+    def filter_positions(self, condition: Callable[[Tuple[int, int]], bool]) -> List[Tuple[int, int]]:
+        return [pos for pos in self.paths.keys() if condition(pos)]
+
+    def get_reachable_positions(self, movement_budget: int) -> List[Tuple[int, int]]:
+        return self.filter_positions(lambda pos: len(self.paths[pos]) - 1 <= movement_budget)
+
+    def get_reachable_entities(self, movement_budget: int) -> List[str]:
+        return self.get_entities(self.get_reachable_positions(movement_budget))
+
+    def get_shortest_path_to_position(self, position: Tuple[int, int]) -> Optional[List[Tuple[int, int]]]:
+        return self.get_path_to(position)
+    
 
 class Sense(BaseModel):
     type: SensesType
     range: int
 
-class ActionCost(BaseModel):
-    type: ActionType
-    cost: int
+class Sensory(BaseModel):
+    senses: List[Sense] = Field(default_factory=list)
+    battlemap_id: Union[str,None] = Field(default=None)
+    origin: Union[Tuple[int, int],None] = Field(default=None)
+    distance_matrix: Optional[DistanceMatrix] = None
+    fov: Optional[FOV] = None
+    paths: Optional[Paths] = None
+    
+    def update_battlemap(self, battlemap_id: str):
+        self.battlemap_id = battlemap_id
 
-class LimitedRecharge(BaseModel):
-    recharge_type: RechargeType
-    recharge_rate: int
-
-class LimitedUsage(BaseModel):
-    usage_type: UsageType
-    usage_number: int
-    recharge: Union[LimitedRecharge, None]
-
-class Duration(BaseModel):
-    time: Union[int, str]
-    concentration: bool = False
-    type: DurationType = Field(DurationType.ROUNDS, description="The type of duration for the effect")
-    has_advanced: bool = False
-
-    def advance(self) -> bool:
-        if self.type in [DurationType.ROUNDS, DurationType.MINUTES, DurationType.HOURS]:
-            if isinstance(self.time, int):
-                self.time -= 1
-                return self.time <= 0
-        return False
-
-    def is_expired(self) -> bool:
-        return self.type != DurationType.INDEFINITE and (
-            (isinstance(self.time, int) and self.time <= 0) or 
-            (isinstance(self.time, str) and self.time.lower() == "expired")
+    def update_distance_matrix(self, distances: Dict[Tuple[int, int], int]):
+        self.distance_matrix = DistanceMatrix(
+            battlemap_id=self.battlemap_id,
+            origin=self.origin,
+            distances=distances
         )
 
+    def update_fov(self, visible_tiles: Set[Tuple[int, int]]):
+        self.fov = FOV(
+            battlemap_id=self.battlemap_id,
+            origin=self.origin,
+            visible_tiles=visible_tiles
+        )
 
+    def update_paths(self, paths: Dict[Tuple[int, int], List[Tuple[int, int]]]):
+        self.paths = Paths(
+            battlemap_id=self.battlemap_id,
+            origin=self.origin,
+            paths=paths
+        )
 
-class Range(BaseModel):
-    type: RangeType
-    normal: int
-    long: Optional[int] = None
+    def get_distance(self, position: Tuple[int, int]) -> Optional[int]:
+        if self.distance_matrix:
+            return self.distance_matrix.get_distance(position)
+        return None
 
-    def __str__(self):
-        if self.type == RangeType.REACH:
-            return f"{self.normal} ft."
-        elif self.type == RangeType.RANGE:
-            return f"{self.normal}/{self.long} ft." if self.long else f"{self.normal} ft."
+    def is_visible(self, position: Tuple[int, int]) -> bool:
+        if self.fov:
+            return self.fov.is_visible(position)
+        return False
 
-class Targeting(BaseModel):
-    type: TargetType
-    shape: Union[ShapeType, None] = None
-    size: Union[int, None] = None  # size of the area of effect
-    line_of_sight: bool = True
-    number_of_targets: Union[int, None] = None
-    requirement: TargetRequirementType = TargetRequirementType.ANY
-    description: str = ""
+    def get_path_to(self, destination: Tuple[int, int]) -> Optional[List[Tuple[int, int]]]:
+        if self.paths:
+            return self.paths.get_path_to(destination)
+        return None
 
-    def target_docstring(self):
-        target_str = self.type.value
-        if self.type == TargetType.AREA and self.shape and self.size:
-            target_str += f" ({self.shape.value}, {self.size} ft.)"
-        if self.number_of_targets:
-            target_str += f", up to {self.number_of_targets} targets"
-        if self.line_of_sight:
-            target_str += ", requiring line of sight"
-        if self.requirement != TargetRequirementType.ANY:
-            target_str += f", {self.requirement.value.lower()} targets only"
-        return target_str
+    def get_entities_within_distance(self, max_distance: int) -> List[str]:
+        if self.distance_matrix:
+            return self.distance_matrix.get_entities_within_distance(max_distance)
+        return []
 
+    def get_visible_entities(self) -> List[str]:
+        if self.fov:
+            return self.fov.get_visible_entities()
+        return []
 
+    def get_reachable_entities(self, movement_budget: int) -> List[str]:
+        if self.paths:
+            return self.paths.get_reachable_entities(movement_budget)
+        return []
 
-class Damage(BaseModel):
-    dice: Dice
-    type: DamageType
+    def get_entities_in_sense_range(self, sense_type: SensesType) -> List[str]:
+        sense = next((s for s in self.senses if s.type == sense_type), None)
+        if sense and self.distance_matrix:
+            return self.distance_matrix.get_entities_within_distance(sense.range)
+        return []
 
-    def average_damage(self):
-        return self.dice.expected_value()
+    def update_origin(self, new_origin: Tuple[int, int]):
+        self.origin = new_origin
+        if self.distance_matrix:
+            self.distance_matrix.origin = new_origin
+        if self.fov:
+            self.fov.origin = new_origin
+        if self.paths:
+            self.paths.origin = new_origin
 
+    def clear_spatial_data(self):
+        self.distance_matrix = None
+        self.fov = None
+        self.paths = None
 
 class ActionEconomy(BaseModel):
     actions: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=1))

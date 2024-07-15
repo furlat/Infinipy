@@ -2,16 +2,13 @@ from typing import List, Optional, Callable, TYPE_CHECKING, Dict, Any
 from pydantic import BaseModel, Field
 from enum import Enum
 from infinipy.dnd.contextual import ModifiableValue, ContextualEffects, ContextAwareBonus, ContextAwareCondition
-
+from infinipy.dnd.dnd_enums import ArmorType, WeaponProperty
 if TYPE_CHECKING:
     from infinipy.dnd.statsblock import StatsBlock
-    from infinipy.dnd.core import AbilityScores, Damage, Range
-    from infinipy.dnd.base_actions import AttackType
+    from infinipy.dnd.core import AbilityScores
+    from infinipy.dnd.actions import AttackType, Range, Damage
 
-class ArmorType(str, Enum):
-    LIGHT = "Light"
-    MEDIUM = "Medium"
-    HEAVY = "Heavy"
+
 
 class Armor(BaseModel):
     name: str
@@ -26,14 +23,7 @@ class Shield(BaseModel):
     name: str
     ac_bonus: int
 
-class WeaponProperty(str, Enum):
-    FINESSE = "Finesse"
-    VERSATILE = "Versatile"
-    RANGED = "Ranged"
-    THROWN = "Thrown"
-    TWO_HANDED = "Two-Handed"
-    LIGHT = "Light"
-    HEAVY = "Heavy"
+
 
 class Weapon(BaseModel):
     name: str

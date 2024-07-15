@@ -1,12 +1,31 @@
 from pydantic import BaseModel, Field
-from typing import Optional, TYPE_CHECKING, Dict, Any, Tuple
+from typing import Optional, TYPE_CHECKING, Dict, Any, Tuple, Union
 import uuid
-from infinipy.dnd.core import Duration, DurationType, HEARING_DEPENDENT_ABILITIES, Skills, Ability, SensesType
-from infinipy.dnd.base_actions import Attack
+from infinipy.dnd.core import  DurationType, Skills, Ability, SensesType, RegistryHolder
+from infinipy.dnd.actions import Attack
 
 
 if TYPE_CHECKING:
     from infinipy.dnd.statsblock import StatsBlock
+
+class Duration(BaseModel):
+    time: Union[int, str]
+    concentration: bool = False
+    type: DurationType = Field(DurationType.ROUNDS, description="The type of duration for the effect")
+    has_advanced: bool = False
+
+    def advance(self) -> bool:
+        if self.type in [DurationType.ROUNDS, DurationType.MINUTES, DurationType.HOURS]:
+            if isinstance(self.time, int):
+                self.time -= 1
+                return self.time <= 0
+        return False
+
+    def is_expired(self) -> bool:
+        return self.type != DurationType.INDEFINITE and (
+            (isinstance(self.time, int) and self.time <= 0) or 
+            (isinstance(self.time, str) and self.time.lower() == "expired")
+        )
 
 class Condition(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -225,9 +244,10 @@ class Frightened(Condition):
     def frightened_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
         if "Frightened" in source.active_conditions:
             frightened_condition = source.active_conditions["Frightened"]
-            return source.is_in_line_of_sight(frightened_condition.source_entity_id)
+            frightening_entity:StatsBlock = RegistryHolder.get_instance(frightened_condition.source_entity_id)
+            if frightening_entity:
+                return source.is_visible(frightening_entity.sensory.origin)
         return False
-
 
 class Grappled(Condition):
     name: str = "Grappled"
@@ -283,7 +303,7 @@ class Invisible(Condition):
 
     @staticmethod
     def can_see_invisible(observer: 'StatsBlock', target: 'StatsBlock') -> bool:
-        observer_senses = {sense.type for sense in observer.senses}
+        observer_senses = {sense.type for sense in observer.sensory.senses}
         return SensesType.TRUESIGHT in observer_senses or SensesType.TREMORSENSE in observer_senses
 
     @staticmethod
@@ -291,7 +311,7 @@ class Invisible(Condition):
         if target is None:
             print("No target provided for invisible check")
             return True  # If no target, assume advantage applies
-        if Invisible.can_see_invisible(target, source) and target.is_in_line_of_sight(source.id):
+        if Invisible.can_see_invisible(target, source) and target.is_visible(source.sensory.origin):
             print(f"{target.name} can see invisible {source.name}")
             return False
         print(f"{target.name} cannot see invisible {source.name}")
@@ -302,7 +322,7 @@ class Invisible(Condition):
         if target is None:
             print("No target provided for invisible check")
             return True  # If no target, assume advantage applies
-        if Invisible.can_see_invisible(source, target) and source.is_in_line_of_sight(target.id):
+        if Invisible.can_see_invisible(source, target) and source.is_visible(target.sensory.origin):
             print(f"{source.name} can see invisible {target.name}")
             return False
         print(f"{source.name} cannot see invisible {target.name}")
@@ -355,7 +375,8 @@ class Paralyzed(Condition):
     def paralyzed_attack_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
         if target is None or source is None:
             return False
-        return target.is_within_distance(source.id, 5)  # 5 feet for melee range
+        distance = source.get_distance(target.sensory.origin)
+        return distance is not None and distance <= 5  # 5 feet for melee range
     
 class Poisoned(Condition):
     name: str = "Poisoned"
@@ -426,13 +447,15 @@ class Prone(Condition):
     def prone_melee_advantage_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
         if target is None or source is None:
             return False
-        return source.is_within_distance(target.id, 5)  # 5 feet for melee range
+        distance = source.get_distance(target.sensory.origin)
+        return distance is not None and distance <= 5  # 5 feet for melee range
 
     @staticmethod
     def prone_ranged_disadvantage_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
         if target is None or source is None:
             return False
-        return not source.is_within_distance(target.id, 10)  # More than 10 feet for ranged attacks
+        distance = source.get_distance(target.sensory.origin)
+        return distance is None or distance > 10  # More than 10 feet for ranged attacks
     
 
 class Stunned(Condition):
@@ -587,7 +610,8 @@ class Unconscious(Condition):
     def unconscious_melee_check(source: 'StatsBlock', target: Optional['StatsBlock'], context: Optional[Dict[str, Any]] = None) -> bool:
         if target is None or source is None:
             return False
-        return source.is_within_distance(target.id, 5)  # 5 feet for melee range
+        distance = source.get_distance(target.sensory.origin)
+        return distance is not None and distance <= 5  # 5 feet for melee range
 
 
 ## missing condition effects

@@ -4,6 +4,7 @@ from fractions import Fraction
 import uuid
 from colorama import Fore, Back, Style
 import colorama
+from infinipy.dnd.core import RegistryHolder
 from infinipy.dnd.statsblock import StatsBlock
 from infinipy.dnd.shadowcast import compute_fov
 from infinipy.dnd.dijkstra import dijkstra
@@ -13,34 +14,15 @@ from collections import defaultdict
 
 colorama.init()
 
-class RegistryHolder:
-    _registry: Dict[str, 'RegistryHolder'] = {}
-    _types: Set[type] = set()
 
-    @classmethod
-    def register(cls, instance: 'RegistryHolder'):
-        cls._registry[instance.id] = instance
-        cls._types.add(type(instance))
 
-    @classmethod
-    def get_instance(cls, instance_id: str):
-        return cls._registry.get(instance_id)
-
-    @classmethod
-    def all_instances(cls, filter_type=True):
-        if filter_type:
-            return [instance for instance in cls._registry.values() if isinstance(instance, cls)]
-        return list(cls._registry.values())
-
-    @classmethod
-    def all_instances_by_type(cls, type: type):
-        return [instance for instance in cls._registry.values() if isinstance(instance, type)]
-
-    @classmethod
-    def all_types(cls, as_string=True):
-        if as_string:
-            return [type_name.__name__ for type_name in cls._types]
-        return cls._types
+from typing import List, Tuple, Optional, Set
+from pydantic import BaseModel, Field, computed_field
+from infinipy.dnd.core import RegistryHolder, Ability
+from infinipy.dnd.statsblock import StatsBlock
+from infinipy.dnd.equipment import Weapon, WeaponProperty
+from infinipy.dnd.actions import Attack, ActionCost, Targeting, MovementAction
+from infinipy.dnd.dnd_enums import AttackType, TargetType, TargetRequirementType, ActionType, AttackType
 
 class Entity(StatsBlock, RegistryHolder):
     battlemap_id: Optional[str] = None
@@ -86,6 +68,66 @@ class Entity(StatsBlock, RegistryHolder):
                 return battlemap.get_entity_position(self.id)
         return None
 
+    def add_weapon_attack(self, weapon: Weapon):
+        ability = Ability.DEX if WeaponProperty.FINESSE in weapon.properties else Ability.STR
+        if weapon.attack_type == AttackType.RANGED_WEAPON:
+            ability = Ability.DEX
+
+        targeting = Targeting(
+            type=TargetType.ONE_TARGET,
+            range=weapon.range.normal,
+            line_of_sight=True,
+            requirement=TargetRequirementType.ANY
+        )
+
+        attack = Attack(
+            name=weapon.name,
+            description=f"{weapon.attack_type.value} Attack with {weapon.name}",
+            cost=[ActionCost(type=ActionType.ACTION, cost=1)],
+            limited_usage=None,
+            attack_type=weapon.attack_type,
+            ability=ability,
+            range=weapon.range,
+            damage=[weapon.damage],
+            targeting=targeting,
+            stats_block=self,
+            weapon=weapon
+        )
+        self.add_action(attack)
+
+    def generate_movement_actions(self) -> List[MovementAction]:
+        movement_actions = []
+        if self.sensory and self.sensory.paths:
+            movement_budget = self.action_economy.movement.get_value(self)
+            reachable_positions = self.sensory.paths.get_reachable_positions(movement_budget)
+            
+            for position in reachable_positions:
+                path = self.sensory.paths.get_shortest_path_to_position(position)
+                if path:
+                    movement_actions.append(MovementAction(
+                        name=f"Move to {position}",
+                        description=f"Move from {self.sensory.origin} to {position}",
+                        cost=[ActionCost(type=ActionType.MOVEMENT, cost=len(path) - 1)],
+                        limited_usage=None,
+                        targeting=Targeting(type=TargetType.SELF),
+                        stats_block=self,
+                        path=path
+                    ))
+
+        return movement_actions
+
+    def update_available_actions(self):
+        # Clear existing movement actions
+        self.actions = [action for action in self.actions if not isinstance(action, MovementAction)]
+        
+        # Add weapon attacks
+        for weapon in self.weapons:
+            self.add_weapon_attack(weapon)
+        
+        # Generate and add movement actions
+        movement_actions = self.generate_movement_actions()
+        self.actions.extend(movement_actions)
+
 
 class BattleMap(BaseModel, RegistryHolder):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -109,30 +151,81 @@ class BattleMap(BaseModel, RegistryHolder):
         tile = self.get_tile(x, y)
         return tile == "WALL"
 
-    def print_ascii_map(self, highlight_los: Optional[Set[Tuple[int, int]]] = None) -> str:
-        ascii_map = []
-        for y in range(self.height):
-            row = []
-            for x in range(self.width):
-                char = self.get_tile_char(x, y)
-                if highlight_los and (x, y) in highlight_los:
-                    char = Back.YELLOW + char + Style.RESET_ALL
-                row.append(char)
-            ascii_map.append(''.join(row))
-        return '\n'.join(ascii_map)
-
-    def visualize_los(self, position: Tuple[int, int]):
+    def compute_line_of_sight(self, entity: 'Entity') -> Set[Tuple[int, int]]:
         los_tiles = set()
-
         def mark_visible(x, y):
             los_tiles.add((x, y))
+        compute_fov(entity.get_position(), self.is_blocking, mark_visible)
+        return los_tiles
+    
+    def compute_dijkstra(
+        self, start: Tuple[int, int], diagonal: bool = True, max_distance: Optional[int] = None
+    ) -> Tuple[Dict[Tuple[int, int], int], Dict[Tuple[int, int], List[Tuple[int, int]]]]:
+        def is_walkable(x, y):
+            return self.get_tile(x, y) == "FLOOR"
+        return dijkstra(start, is_walkable, self.width, self.height, diagonal, max_distance)
 
-        compute_fov(position, self.is_blocking, mark_visible)
-        print(f"Map with line of sight from {position}:")
-        print(self.print_ascii_map(highlight_los=los_tiles))
+    def add_entity(self, entity: 'Entity', position: Tuple[int, int]):
+        entity_id = entity.id
+        entity.set_battlemap(self.id)
+        self.entities[entity_id] = position
+        self.positions[position].add(entity_id)
+        self.update_entity_senses(entity)
+
+    def remove_entity(self, entity: 'Entity'):
+        entity_id = entity.id
+        position = self.entities.pop(entity_id, None)
+        if position:
+            self.positions[position].remove(entity_id)
+            if not self.positions[position]:
+                del self.positions[position]
+        entity.remove_from_battlemap()
+
+    def move_entity(self, entity: 'Entity', new_position: Tuple[int, int]):
+        entity_id = entity.id
+        old_position = self.entities[entity_id]
+        self.positions[old_position].remove(entity_id)
+        if not self.positions[old_position]:
+            del self.positions[old_position]
+
+        self.entities[entity_id] = new_position
+        self.positions[new_position].add(entity_id)
+        self.update_entity_senses(entity)
+
+    def get_entity_position(self, entity_id: str) -> Optional[Tuple[int, int]]:
+        return self.entities.get(entity_id)
+
+    def update_entity_senses(self, entity: 'Entity'):
+        entity.sensory.update_battlemap(self.id)
+        position = self.get_entity_position(entity.id)
+        if position:
+            entity.sensory.update_origin(position)
+            self.update_entity_fov(entity)
+            self.update_entity_distance_matrix(entity)
+            self.update_entity_paths(entity)
+            entity.update_available_actions()
+
+    def update_entity_fov(self, entity: 'Entity'):
+        los_tiles = self.compute_line_of_sight(entity)
+        entity.sensory.update_fov(los_tiles)
+
+    def update_entity_distance_matrix(self, entity: 'Entity'):
+        distances, _ = self.compute_dijkstra(entity.get_position())
+        entity.sensory.update_distance_matrix(distances)
+
+    def update_entity_paths(self, entity: 'Entity'):
+        _, paths = self.compute_dijkstra(entity.get_position())
+        entity.sensory.update_paths(paths)
+
+    def __str__(self) -> str:
+        return f"BattleMap(id={self.id}, width={self.width}, height={self.height}, entities={len(self.entities)})"
+
+class MapDrawer:
+    def __init__(self, battle_map: 'BattleMap'):
+        self.battle_map = battle_map
 
     def get_tile_char(self, x: int, y: int) -> str:
-        tile = self.get_tile(x, y)
+        tile = self.battle_map.get_tile(x, y)
         if tile == "WALL":
             return '#'
         elif tile == "WATER":
@@ -142,30 +235,31 @@ class BattleMap(BaseModel, RegistryHolder):
         else:
             return ' '
 
-    def compute_line_of_sight(self, entity: Entity) -> Set[Tuple[int, int]]:
-        los_tiles = set()
+    def print_ascii_map(self, highlight_los: Optional[Set[Tuple[int, int]]] = None) -> str:
+        ascii_map = []
+        for y in range(self.battle_map.height):
+            row = []
+            for x in range(self.battle_map.width):
+                char = self.get_tile_char(x, y)
+                if highlight_los and (x, y) in highlight_los:
+                    char = Back.YELLOW + char + Style.RESET_ALL
+                row.append(char)
+            ascii_map.append(''.join(row))
+        return '\n'.join(ascii_map)
 
-        def mark_visible(x, y):
-            los_tiles.add((x, y))
-
-        compute_fov(entity.get_position(), self.is_blocking, mark_visible)
-        return los_tiles
-    
-    def compute_dijkstra(
-        self, start: Tuple[int, int], diagonal: bool = True, max_distance: Optional[int] = None
-    ) -> Tuple[Dict[Tuple[int, int], int], Dict[Tuple[int, int], List[Tuple[int, int]]]]:
-        def is_walkable(x, y):
-            return self.get_tile(x, y) == "FLOOR"
-
-        return dijkstra(start, is_walkable, self.width, self.height, diagonal, max_distance)
+    def visualize_los(self, entity: Entity):
+        los_tiles = self.battle_map.compute_line_of_sight(entity)
+        position =  entity.get_position()
+        print(f"Map with line of sight from {position}:")
+        print(self.print_ascii_map(highlight_los=los_tiles))
 
     def visualize_dijkstra_distances(self, start: Tuple[int, int], diagonal: bool = True, max_distance: Optional[int] = None):
-        distances, _ = self.compute_dijkstra(start, diagonal, max_distance)
+        distances, _ = self.battle_map.compute_dijkstra(start, diagonal, max_distance)
         
         ascii_map = []
-        for y in range(self.height):
+        for y in range(self.battle_map.height):
             row = []
-            for x in range(self.width):
+            for x in range(self.battle_map.width):
                 if (x, y) == start:
                     char = '@'
                 elif (x, y) in distances:
@@ -177,16 +271,16 @@ class BattleMap(BaseModel, RegistryHolder):
         return '\n'.join(ascii_map)
 
     def visualize_dijkstra_path(self, start: Tuple[int, int], end: Tuple[int, int], diagonal: bool = True, max_distance: Optional[int] = None):
-        _, paths = self.compute_dijkstra(start, diagonal, max_distance)
+        _, paths = self.battle_map.compute_dijkstra(start, diagonal, max_distance)
         
         if end not in paths:
             return "No path found."
 
         path_set = set(paths[end])
         ascii_map = []
-        for y in range(self.height):
+        for y in range(self.battle_map.height):
             row = []
-            for x in range(self.width):
+            for x in range(self.battle_map.width):
                 if (x, y) == start:
                     char = '@'
                 elif (x, y) == end:
@@ -205,9 +299,9 @@ class BattleMap(BaseModel, RegistryHolder):
 
     def visualize_absolute_distances(self, start: Tuple[int, int]):
         ascii_map = []
-        for y in range(self.height):
+        for y in range(self.battle_map.height):
             row = []
-            for x in range(self.width):
+            for x in range(self.battle_map.width):
                 distance = self.compute_absolute_distance(start, (x, y))
                 if (x, y) == start:
                     char = '@'
@@ -220,39 +314,5 @@ class BattleMap(BaseModel, RegistryHolder):
                 row.append(char)
             ascii_map.append(''.join(row))
         return '\n'.join(ascii_map)
+    
 
-    def add_entity(self, entity: Entity, position: Tuple[int, int]):
-        entity_id = entity.id
-        entity.set_battlemap(self.id)
-        self.entities[entity_id] = position
-        self.positions[position].add(entity_id)
-        self.update_entity_los(entity)
-
-    def remove_entity(self, entity: Entity):
-        entity_id = entity.id
-        position = self.entities.pop(entity_id, None)
-        if position:
-            self.positions[position].remove(entity_id)
-            if not self.positions[position]:
-                del self.positions[position]
-        entity.remove_from_battlemap()
-
-    def move_entity(self, entity: Entity, new_position: Tuple[int, int]):
-        entity_id = entity.id
-        old_position = self.entities[entity_id]
-        self.positions[old_position].remove(entity_id)
-        if not self.positions[old_position]:
-            del self.positions[old_position]
-
-        self.entities[entity_id] = new_position
-        self.positions[new_position].add(entity_id)
-        self.update_entity_los(entity)
-
-    def get_entity_position(self, entity_id: str) -> Optional[Tuple[int, int]]:
-        return self.entities.get(entity_id)
-
-    def update_entity_los(self, entity: Entity):
-        entity.line_of_sight = self.compute_line_of_sight(entity)
-
-    def __str__(self) -> str:
-        return self.print_ascii_map()

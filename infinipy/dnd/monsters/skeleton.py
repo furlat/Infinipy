@@ -1,6 +1,6 @@
 from infinipy.dnd.statsblock import StatsBlock
 from infinipy.dnd.equipment import Armor, ArmorType, Shield, Weapon, WeaponProperty, ArmorClass
-from infinipy.dnd.base_actions import Action, ActionCost, ActionType, Targeting, TargetType, AttackType, Attack
+from infinipy.dnd.actions import Action, ActionCost, ActionType, Targeting, TargetType, AttackType, Attack
 from infinipy.dnd.core import Ability, AbilityScores, AbilityScore, ModifiableValue, Dice, \
  Damage, DamageType, Range, RangeType, Size, MonsterType, Alignment, Speed, Skills, Sense, SensesType, Language, ActionEconomy
 from infinipy.dnd.core import SkillSet, SavingThrow
