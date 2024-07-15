@@ -6,28 +6,29 @@ from infinipy.dnd.contextual import ModifiableValue, ContextualEffects, ContextA
 from infinipy.dnd.core import Ability, SkillSet,Size, MonsterType, Alignment, AbilityScores, Speed, SavingThrow,SavingThrows, SkillBonus, DamageType, \
     Sense, Language, Dice, Skills, Targeting, ActionEconomy, ActionCost, ActionType, TargetRequirementType, TargetType
 from infinipy.dnd.conditions import Condition
-from infinipy.dnd.actions import Action, Attack, Dash, Disengage, Dodge, Help, Hide, AttackType
+from infinipy.dnd.base_actions import Action, Attack, AttackType,SelfCondition
+from infinipy.dnd.actions import Dodge, Dash
 from infinipy.dnd.equipment import Armor, Shield, Weapon, ArmorClass, WeaponProperty
 
 class StatsBlock(BaseModel):
-    name: str = Field(..., description="name of the creature")
+    name: str = Field(default="Unnamed", description="name of the creature")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="unique identifier for the creature")
-    size: Size = Field(..., description=size_docstring)
-    type: MonsterType = Field(..., description=type_docstring)
-    alignment: Alignment = Field(..., description=alignment_docstring)
-    speed: Speed = Field(Speed(walk=ModifiableValue(base_value=30)), description=speed_docstring)
+    size: Size = Field(default=Size.MEDIUM, description=size_docstring)
+    type: MonsterType = Field(default=MonsterType.HUMANOID, description=type_docstring)
+    alignment: Alignment = Field(default=Alignment.TRUE_NEUTRAL, description=alignment_docstring)
+    speed: Speed = Field(default_factory=lambda: Speed(walk=ModifiableValue(base_value=30)), description=speed_docstring)
     ability_scores: AbilityScores = Field(default_factory=AbilityScores)
     saving_throws: SavingThrows = Field(default_factory=SavingThrows)
     skills: SkillSet = Field(default_factory=SkillSet)
-    vulnerabilities: List[DamageType] = Field([], description=vulnerabilities_resistances_immunities_docstring)
-    resistances: List[DamageType] = Field([], description=vulnerabilities_resistances_immunities_docstring)
-    immunities: List[DamageType] = Field([], description=vulnerabilities_resistances_immunities_docstring)
-    senses: List[Sense] = Field([], description=senses_docstring)
-    languages: List[Language] = Field([], description=languages_docstring)
-    telepathy: int = Field(0, description=telepathy_docstring)
-    challenge: float = Field(..., description=challenge_docstring)
-    experience_points: int = Field(..., description=experience_points_docstring)
-    special_traits: List[str] = Field([], description=special_traits_docstring)
+    vulnerabilities: List[DamageType] = Field(default_factory=list, description=vulnerabilities_resistances_immunities_docstring)
+    resistances: List[DamageType] = Field(default_factory=list, description=vulnerabilities_resistances_immunities_docstring)
+    immunities: List[DamageType] = Field(default_factory=list, description=vulnerabilities_resistances_immunities_docstring)
+    senses: List[Sense] = Field(default_factory=list, description=senses_docstring)
+    languages: List[Language] = Field(default_factory=list, description=languages_docstring)
+    telepathy: int = Field(default=0, description=telepathy_docstring)
+    challenge: float = Field(default=0.0, description=challenge_docstring)
+    experience_points: int = Field(default=0, description=experience_points_docstring)
+    special_traits: List[str] = Field(default_factory=list, description=special_traits_docstring)
     actions: List[Action] = Field(default_factory=list, description=actions_docstring)
     reactions: List[Action] = Field(default_factory=list, description=reactions_docstring)
     legendary_actions: List[Action] = Field(default_factory=list, description=legendary_actions_docstring)
@@ -35,17 +36,15 @@ class StatsBlock(BaseModel):
     regional_effects: List[str] = Field(default_factory=list, description=legendary_lair_docstring)
     armor_class: ArmorClass = Field(default_factory=lambda: ArmorClass(base_ac=ModifiableValue(base_value=10)))
     weapons: List[Weapon] = Field(default_factory=list)
-    hit_dice: Dice
+    hit_dice: Dice = Field(default_factory=lambda: Dice(dice_count=1, dice_value=8, modifier=0))
     hit_point_bonus: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
-    current_hit_points: int = Field(0)
-    computed_passive_perception: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=0))
+    current_hit_points: int = Field(default=0)
+    computed_passive_perception: ModifiableValue = Field(default_factory=lambda: ModifiableValue(base_value=10))
     action_economy: ActionEconomy = Field(default_factory=lambda: ActionEconomy(speed=30))
     active_conditions: Dict[Tuple[str, str], Condition] = Field(default_factory=dict)
     modifier_immunity: List[str] = Field(default_factory=list)
     line_of_sight: Set[str] = Field(default_factory=set)
     distances: Dict[str, int] = Field(default_factory=dict)
-
-
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -54,12 +53,13 @@ class StatsBlock(BaseModel):
             self.current_hit_points = self.max_hit_points
         self._recompute_fields()
 
+
     def add_default_actions(self):
         self.add_action(Dodge(stats_block=self))
-        self.add_action(Disengage(stats_block=self))
+        # self.add_action(Disengage(stats_block=self))
         self.add_action(Dash(stats_block=self))
-        self.add_action(Hide(stats_block=self))
-        self.add_action(Help(stats_block=self))
+        # self.add_action(Hide(stats_block=self))
+        # self.add_action(Help(stats_block=self))
 
     def refresh_line_of_sight(self, visible_entities: Set[str]):
         self.line_of_sight = visible_entities
@@ -343,11 +343,12 @@ class StatsBlock(BaseModel):
         self._recompute_fields()
 
 ModifiableValue.model_rebuild()
+SelfCondition.model_rebuild()
 Dodge.model_rebuild()
-Disengage.model_rebuild()
+# # Disengage.model_rebuild()
 Dash.model_rebuild()
-Hide.model_rebuild()
-Help.model_rebuild()
+# Hide.model_rebuild()
+# Help.model_rebuild()
 Attack.model_rebuild()
 # ArmorClass.model_rebuild()
 # Weapon.model_rebuild()

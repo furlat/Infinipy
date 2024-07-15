@@ -6,7 +6,7 @@ from infinipy.dnd.contextual import ModifiableValue, ContextualEffects, ContextA
 if TYPE_CHECKING:
     from infinipy.dnd.statsblock import StatsBlock
     from infinipy.dnd.core import AbilityScores, Damage, Range
-    from infinipy.dnd.actions import AttackType
+    from infinipy.dnd.base_actions import AttackType
 
 class ArmorType(str, Enum):
     LIGHT = "Light"

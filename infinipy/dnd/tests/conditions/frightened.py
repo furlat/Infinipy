@@ -4,7 +4,7 @@ from infinipy.dnd.statsblock import StatsBlock
 from infinipy.dnd.monsters.goblin import create_goblin
 from infinipy.dnd.monsters.skeleton import create_skeleton
 from infinipy.dnd.conditions import Frightened, Duration, DurationType
-from infinipy.dnd.actions import Attack
+from infinipy.dnd.base_actions import Attack
 from infinipy.dnd.core import Skills, Ability
 
 def print_creature_details(creature: StatsBlock):

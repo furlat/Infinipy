@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, TYPE_CHECKING, Dict, Any, Tuple
 import uuid
 from infinipy.dnd.core import Duration, DurationType, HEARING_DEPENDENT_ABILITIES, Skills, Ability, SensesType
-from infinipy.dnd.actions import Attack
+from infinipy.dnd.base_actions import Attack
 
 
 if TYPE_CHECKING:
